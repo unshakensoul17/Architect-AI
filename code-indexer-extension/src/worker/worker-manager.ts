@@ -1,0 +1,265 @@
+// Purpose: Worker manager for extension host
+// Handles worker lifecycle, message routing, and timeout control
+// Prevents runaway workers and resource exhaustion
+
+import { Worker } from 'worker_threads';
+import * as path from 'path';
+import {
+    WorkerRequest,
+    WorkerResponse,
+    isWorkerResponse,
+    SymbolResult,
+    IndexStats,
+} from './message-protocol';
+
+interface PendingRequest {
+    resolve: (response: WorkerResponse) => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+}
+
+export class WorkerManager {
+    private worker: Worker | null = null;
+    private pendingRequests: Map<string, PendingRequest> = new Map();
+    private requestIdCounter: number = 0;
+    private isReady: boolean = false;
+    private readonly REQUEST_TIMEOUT = 30000; // 30 seconds
+
+    /**
+     * Start the worker
+     */
+    async start(workerPath: string): Promise<void> {
+        if (this.worker) {
+            throw new Error('Worker already started');
+        }
+
+        this.worker = new Worker(workerPath);
+
+        // Set up message handler
+        this.worker.on('message', (message: unknown) => {
+            this.handleMessage(message);
+        });
+
+        // Set up error handler
+        this.worker.on('error', (error) => {
+            console.error('Worker error:', error);
+            this.rejectAllPending(new Error(`Worker error: ${error.message}`));
+        });
+
+        // Set up exit handler
+        this.worker.on('exit', (code) => {
+            if (code !== 0) {
+                console.error(`Worker exited with code ${code}`);
+                this.rejectAllPending(new Error(`Worker exited with code ${code}`));
+            }
+            this.worker = null;
+            this.isReady = false;
+        });
+
+        // Wait for ready signal
+        await this.waitForReady();
+    }
+
+    /**
+     * Wait for worker ready signal
+     */
+    private waitForReady(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Worker initialization timeout'));
+            }, 10000);
+
+            const checkReady = (message: unknown) => {
+                if (
+                    typeof message === 'object' &&
+                    message !== null &&
+                    'type' in message &&
+                    (message as any).type === 'ready'
+                ) {
+                    clearTimeout(timeout);
+                    this.isReady = true;
+                    resolve();
+                }
+            };
+
+            if (this.worker) {
+                this.worker.once('message', checkReady);
+            }
+        });
+    }
+
+    /**
+     * Handle incoming messages from worker
+     */
+    private handleMessage(message: unknown): void {
+        if (!isWorkerResponse(message)) {
+            console.error('Invalid worker response:', message);
+            return;
+        }
+
+        // Handle ready message
+        if (message.type === 'ready') {
+            this.isReady = true;
+            return;
+        }
+
+        // Find and resolve pending request
+        const pending = this.pendingRequests.get(message.id);
+        if (pending) {
+            clearTimeout(pending.timeout);
+            this.pendingRequests.delete(message.id);
+
+            if (message.type === 'error') {
+                pending.reject(new Error(message.error));
+            } else {
+                pending.resolve(message);
+            }
+        }
+    }
+
+    /**
+     * Send request to worker
+     */
+    private sendRequest(request: WorkerRequest): Promise<WorkerResponse> {
+        if (!this.worker || !this.isReady) {
+            return Promise.reject(new Error('Worker not ready'));
+        }
+
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                this.pendingRequests.delete(request.id);
+                reject(new Error(`Request ${request.type} timed out`));
+            }, this.REQUEST_TIMEOUT);
+
+            this.pendingRequests.set(request.id, { resolve, reject, timeout });
+            this.worker!.postMessage(request);
+        });
+    }
+
+    /**
+     * Generate unique request ID
+     */
+    private generateId(): string {
+        return `${Date.now()}-${this.requestIdCounter++}`;
+    }
+
+    /**
+     * Parse a file
+     */
+    async parseFile(
+        filePath: string,
+        content: string,
+        language: 'typescript' | 'python' | 'c'
+    ): Promise<{ symbolCount: number; edgeCount: number }> {
+        const response = await this.sendRequest({
+            type: 'parse',
+            id: this.generateId(),
+            filePath,
+            content,
+            language,
+        });
+
+        if (response.type !== 'parse-complete') {
+            throw new Error('Unexpected response type');
+        }
+
+        return {
+            symbolCount: response.symbolCount,
+            edgeCount: response.edgeCount,
+        };
+    }
+
+    /**
+     * Query symbols by name
+     */
+    async querySymbols(query: string): Promise<SymbolResult[]> {
+        const response = await this.sendRequest({
+            type: 'query-symbols',
+            id: this.generateId(),
+            query,
+        });
+
+        if (response.type !== 'query-result') {
+            throw new Error('Unexpected response type');
+        }
+
+        return response.symbols;
+    }
+
+    /**
+     * Query symbols by file
+     */
+    async queryFile(filePath: string): Promise<SymbolResult[]> {
+        const response = await this.sendRequest({
+            type: 'query-file',
+            id: this.generateId(),
+            filePath,
+        });
+
+        if (response.type !== 'query-result') {
+            throw new Error('Unexpected response type');
+        }
+
+        return response.symbols;
+    }
+
+    /**
+     * Clear index
+     */
+    async clearIndex(): Promise<void> {
+        await this.sendRequest({
+            type: 'clear',
+            id: this.generateId(),
+        });
+    }
+
+    /**
+     * Get statistics
+     */
+    async getStats(): Promise<IndexStats> {
+        const response = await this.sendRequest({
+            type: 'stats',
+            id: this.generateId(),
+        });
+
+        if (response.type !== 'stats-result') {
+            throw new Error('Unexpected response type');
+        }
+
+        return response.stats;
+    }
+
+    /**
+     * Shutdown worker
+     */
+    async shutdown(): Promise<void> {
+        if (!this.worker) {
+            return;
+        }
+
+        this.sendRequest({
+            type: 'shutdown',
+            id: this.generateId(),
+        }).catch(() => {
+            // Ignore errors during shutdown
+        });
+
+        // Force terminate after timeout
+        setTimeout(() => {
+            if (this.worker) {
+                this.worker.terminate();
+            }
+        }, 1000);
+    }
+
+    /**
+     * Reject all pending requests
+     */
+    private rejectAllPending(error: Error): void {
+        for (const [id, pending] of this.pendingRequests) {
+            clearTimeout(pending.timeout);
+            pending.reject(error);
+        }
+        this.pendingRequests.clear();
+    }
+}
