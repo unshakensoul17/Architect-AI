@@ -51,6 +51,39 @@ export type WorkerRequest =
     | {
         type: 'shutdown';
         id: string;
+    }
+    // AI Orchestrator message types
+    | {
+        type: 'ai-query';
+        id: string;
+        query: string;
+        symbolId?: number;
+        symbolName?: string;
+        analysisType?: 'security' | 'refactor' | 'dependencies' | 'general';
+    }
+    | {
+        type: 'ai-classify-intent';
+        id: string;
+        query: string;
+    }
+    | {
+        type: 'configure-ai';
+        id: string;
+        config: {
+            vertexProject?: string;
+            groqApiKey?: string;
+        };
+    }
+    | {
+        type: 'mcp-tool-call';
+        id: string;
+        toolName: string;
+        arguments: Record<string, unknown>;
+    }
+    | {
+        type: 'get-context';
+        id: string;
+        symbolId: number;
     };
 
 /**
@@ -104,6 +137,47 @@ export type WorkerResponse =
     }
     | {
         type: 'ready';
+    }
+    | {
+        type: 'configure-ai-complete';
+        id: string;
+    }
+    // AI Orchestrator response types
+    | {
+        type: 'ai-query-result';
+        id: string;
+        content: string;
+        model: string;
+        intent: {
+            type: 'reflex' | 'strategic';
+            confidence: number;
+        };
+        latencyMs: number;
+        contextIncluded: boolean;
+        neighborCount?: number;
+    }
+    | {
+        type: 'ai-intent-result';
+        id: string;
+        intentType: 'reflex' | 'strategic';
+        confidence: number;
+        matchedPattern?: string;
+    }
+    | {
+        type: 'mcp-tool-result';
+        id: string;
+        success: boolean;
+        toolName: string;
+        result?: unknown;
+        error?: string;
+    }
+    | {
+        type: 'context-result';
+        id: string;
+        symbol: SymbolResult | null;
+        neighbors: SymbolResult[];
+        incomingEdgeCount: number;
+        outgoingEdgeCount: number;
     };
 
 /**

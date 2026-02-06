@@ -9,12 +9,13 @@
         "preview": "vite preview"
     },
     "dependencies": {
-        "react": "^18.3.1",
-        "react-dom": "^18.3.1",
+        "@types/dagre": "^0.7.52",
         "@xyflow/react": "^12.3.5",
-        "graphology": "^0.25.4",
         "dagre": "^0.8.5",
-        "@types/dagre": "^0.7.52"
+        "elkjs": "^0.11.0",
+        "graphology": "^0.25.4",
+        "react": "^18.3.1",
+        "react-dom": "^18.3.1"
     },
     "devDependencies": {
         "@types/react": "^18.3.12",

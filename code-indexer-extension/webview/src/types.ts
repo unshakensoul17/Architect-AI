@@ -11,6 +11,7 @@ export interface GraphSymbol {
         endColumn: number;
     };
     complexity: number;
+    domain?: string | null;
 }
 
 export interface GraphEdge {
@@ -26,11 +27,7 @@ export interface GraphFile {
     lastIndexedAt: string;
 }
 
-export interface GraphData {
-    symbols: GraphSymbol[];
-    edges: GraphEdge[];
-    files: GraphFile[];
-}
+
 
 // VS Code API for webview
 export interface VSCodeAPI {
@@ -82,4 +79,29 @@ export interface SymbolNodeData extends Record<string, unknown> {
     coupling: CouplingMetrics;
     filePath: string;
     line: number;
+}
+
+// Domain health metrics
+export interface DomainHealth {
+    domain: string;
+    symbolCount: number;
+    avgComplexity: number;
+    coupling: number;
+    healthScore: number;
+    status: 'healthy' | 'warning' | 'critical';
+}
+
+// Domain node data
+export interface DomainNodeData extends Record<string, unknown> {
+    domain: string;
+    health: DomainHealth;
+    collapsed: boolean;
+}
+
+// Updated graph data with domains
+export interface GraphData {
+    symbols: GraphSymbol[];
+    edges: GraphEdge[];
+    files: GraphFile[];
+    domains: { domain: string; symbolCount: number; health: DomainHealth }[];
 }

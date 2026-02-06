@@ -44,11 +44,26 @@
       }
     ]
   },
+  "configuration": {
+    "type": "object",
+    "title": "Code Indexer",
+    "properties": {
+      "codeIndexer.vertexProject": {
+        "type": "string",
+        "description": "Google Cloud Project ID for Vertex AI (Gemini 1.5 Pro). Required for strategic analysis."
+      },
+      "codeIndexer.groqApiKey": {
+        "type": "string",
+        "description": "Groq API Key (Llama 3.1). Required for reflex/fast analysis."
+      }
+    }
+  },
   "scripts": {
     "vscode:prepublish": "npm run build",
     "build": "npm run build:webview && esbuild src/extension.ts src/worker/worker.ts --bundle --outdir=dist --external:vscode --external:web-tree-sitter --external:better-sqlite3 --format=cjs --platform=node --target=node20 --sourcemap",
     "build:webview": "cd webview && npm install && npm run build",
     "rebuild": "npx @electron/rebuild -f -w better-sqlite3 -v 39.0.0",
+    "rebuild:electron-32": "npx @electron/rebuild -f -w better-sqlite3 -v 32.0.0",
     "rebuild:node": "npm rebuild better-sqlite3",
     "watch": "npm run build -- --watch",
     "test": "npm run rebuild:node && node test/validate.js",
@@ -68,8 +83,10 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
+    "@google-cloud/vertexai": "^1.10.0",
     "better-sqlite3": "^12.6.2",
     "drizzle-orm": "^0.30.4",
+    "groq-sdk": "^0.37.0",
     "tree-sitter-wasms": "^0.1.11",
     "web-tree-sitter": "^0.20.8"
   }

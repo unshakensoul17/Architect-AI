@@ -4,6 +4,7 @@
 
 import Parser from 'web-tree-sitter';
 import { NewSymbol, NewEdge } from '../db/schema';
+import { DomainClassifier } from '../domain/classifier';
 
 export interface ExtractionResult {
     symbols: NewSymbol[];
@@ -47,6 +48,9 @@ export class SymbolExtractor {
 
     // Current context for call expression resolution
     private currentSymbolKey: string | null = null;
+
+    // Domain classifier
+    private domainClassifier: DomainClassifier = new DomainClassifier();
 
     /**
      * Extract symbols and edges from AST
@@ -199,6 +203,14 @@ export class SymbolExtractor {
         // Calculate complexity
         const complexity = this.calculateComplexity(node);
 
+        // Classify domain
+        const importModules = this.imports.map(imp => imp.sourceModule);
+        const domainClassification = this.domainClassifier.classify(
+            this.filePath,
+            importModules,
+            name
+        );
+
         // Create symbol
         const symbol: NewSymbol = {
             name,
@@ -209,6 +221,7 @@ export class SymbolExtractor {
             rangeEndLine: node.endPosition.row + 1,
             rangeEndColumn: node.endPosition.column,
             complexity,
+            domain: domainClassification.domain,
         };
 
         const symbolKey = `${this.filePath}:${name}:${node.startPosition.row}`;

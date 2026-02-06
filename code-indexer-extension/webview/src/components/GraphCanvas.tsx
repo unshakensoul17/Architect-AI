@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import {
     ReactFlow,
     Background,
@@ -14,9 +14,10 @@ import '@xyflow/react/dist/style.css';
 
 import FileNode from './FileNode';
 import SymbolNode from './SymbolNode';
-import type { GraphData } from '../types';
+import DomainNode from './DomainNode';
+import type { GraphData, DomainNodeData } from '../types';
 import { calculateCouplingMetrics } from '../utils/metrics';
-import { applyHierarchicalLayout } from '../utils/layout';
+import { applyElkLayout } from '../utils/elk-layout';
 import { optimizeEdges } from '../utils/performance';
 
 interface GraphCanvasProps {
@@ -27,119 +28,155 @@ interface GraphCanvasProps {
 const nodeTypes: NodeTypes = {
     fileNode: FileNode,
     symbolNode: SymbolNode,
+    domainNode: DomainNode,
 };
 
 const GraphCanvas = memo(({ graphData, onNodeClick }: GraphCanvasProps) => {
-    // Transform graph data to React Flow format
-    const { initialNodes, initialEdges } = useMemo(() => {
+    const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+    const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+    const [isLayouting, setIsLayouting] = useState(false);
+
+    useEffect(() => {
         if (!graphData) {
-            return { initialNodes: [], initialEdges: [] };
+            setNodes([]);
+            setEdges([]);
+            return;
         }
 
-        // Calculate coupling metrics
-        const metrics = calculateCouplingMetrics(graphData);
+        const runLayout = async () => {
+            setIsLayouting(true);
+            try {
+                // Calculate coupling metrics
+                const metrics = calculateCouplingMetrics(graphData);
 
-        // Group symbols by file
-        const symbolsByFile = new Map<string, typeof graphData.symbols>();
-        graphData.symbols.forEach((symbol) => {
-            if (!symbolsByFile.has(symbol.filePath)) {
-                symbolsByFile.set(symbol.filePath, []);
-            }
-            symbolsByFile.get(symbol.filePath)!.push(symbol);
-        });
-
-        // Create file nodes (parent nodes)
-        const fileNodes: Node[] = Array.from(symbolsByFile.entries()).map(
-            ([filePath, symbols]) => {
-                // Calculate average coupling for this file
-                const fileCouplings = symbols
-                    .map((s) => {
-                        const key = `${s.filePath}:${s.name}:${s.range.startLine}`;
-                        return metrics.get(key)?.normalizedScore || 0;
-                    })
-                    .filter((score) => score > 0);
-
-                const avgCoupling =
-                    fileCouplings.length > 0
-                        ? fileCouplings.reduce((a, b) => a + b, 0) / fileCouplings.length
-                        : 0;
-
-                return {
-                    id: filePath,
-                    type: 'fileNode',
-                    position: { x: 0, y: 0 }, // Will be set by layout
+                // Create domain nodes (top level)
+                const domainNodes: Node[] = graphData.domains.map((domainData) => ({
+                    id: `domain:${domainData.domain}`,
+                    type: 'domainNode',
+                    position: { x: 0, y: 0 },
                     data: {
-                        label: filePath.split('/').pop() || filePath,
-                        filePath,
-                        symbolCount: symbols.length,
-                        avgCoupling,
+                        domain: domainData.domain,
+                        health: domainData.health,
                         collapsed: false,
+                    } as DomainNodeData,
+                }));
+
+                // Group symbols by domain and file
+                const symbolsByDomain = new Map<string, Map<string, typeof graphData.symbols>>();
+                graphData.symbols.forEach((symbol) => {
+                    const domain = symbol.domain || 'unknown';
+                    if (!symbolsByDomain.has(domain)) {
+                        symbolsByDomain.set(domain, new Map());
+                    }
+                    const fileMap = symbolsByDomain.get(domain)!;
+                    if (!fileMap.has(symbol.filePath)) {
+                        fileMap.set(symbol.filePath, []);
+                    }
+                    fileMap.get(symbol.filePath)!.push(symbol);
+                });
+
+                // Create file and symbol nodes grouped by domain
+                const fileNodes: Node[] = [];
+                const symbolNodes: Node[] = [];
+
+                for (const [domain, fileMap] of symbolsByDomain) {
+                    for (const [filePath, symbols] of fileMap) {
+                        const fileCouplings = symbols
+                            .map((s) => {
+                                const key = `${s.filePath}:${s.name}:${s.range.startLine}`;
+                                return metrics.get(key)?.normalizedScore || 0;
+                            })
+                            .filter((score) => score > 0);
+
+                        const avgCoupling =
+                            fileCouplings.length > 0
+                                ? fileCouplings.reduce((a, b) => a + b, 0) / fileCouplings.length
+                                : 0;
+
+                        // Create file node as child of domain
+                        fileNodes.push({
+                            id: filePath,
+                            type: 'fileNode',
+                            position: { x: 0, y: 0 },
+                            data: {
+                                filePath,
+                                symbolCount: symbols.length,
+                                avgCoupling,
+                                collapsed: false,
+                            },
+                            parentId: `domain:${domain}`,
+                            extent: 'parent',
+                        });
+
+                        // Create symbol nodes as children of file nodes
+                        symbols.forEach((symbol) => {
+                            const key = `${symbol.filePath}:${symbol.name}:${symbol.range.startLine}`;
+                            const coupling = metrics.get(key) || {
+                                nodeId: key,
+                                inDegree: 0,
+                                outDegree: 0,
+                                cbo: 0,
+                                normalizedScore: 0,
+                                color: '#3b82f6',
+                            };
+
+                            symbolNodes.push({
+                                id: key,
+                                type: 'symbolNode',
+                                position: { x: 0, y: 0 },
+                                data: {
+                                    label: symbol.name,
+                                    symbolType: symbol.type,
+                                    complexity: symbol.complexity,
+                                    coupling,
+                                    filePath: symbol.filePath,
+                                    line: symbol.range.startLine,
+                                },
+                                parentId: symbol.filePath,
+                                extent: 'parent',
+                            });
+                        });
+                    }
+                }
+
+                // Create edges
+                const rawEdges: Edge[] = graphData.edges.map((edge, index) => ({
+                    id: `edge-${index}`,
+                    source: edge.source,
+                    target: edge.target,
+                    type: 'smoothstep',
+                    animated: edge.type === 'call',
+                    style: {
+                        stroke:
+                            edge.type === 'call'
+                                ? '#3b82f6'
+                                : edge.type === 'import'
+                                    ? '#10b981'
+                                    : '#6b7280',
+                        strokeWidth: 1.5,
                     },
-                };
+                }));
+
+                // Optimize edges for performance
+                const optimizedEdges = optimizeEdges(rawEdges, 1000);
+
+                // Apply layout with domain hierarchy
+                const { nodes: layoutedNodes, edges: layoutedEdges } = await applyElkLayout(
+                    [...domainNodes, ...fileNodes, ...symbolNodes],
+                    optimizedEdges
+                );
+
+                setNodes(layoutedNodes);
+                setEdges(layoutedEdges);
+            } catch (error) {
+                console.error('Layout failed:', error);
+            } finally {
+                setIsLayouting(false);
             }
-        );
-
-        // Create symbol nodes (child nodes)
-        const symbolNodes: Node[] = graphData.symbols.map((symbol) => {
-            const key = `${symbol.filePath}:${symbol.name}:${symbol.range.startLine}`;
-            const coupling = metrics.get(key) || {
-                nodeId: key,
-                inDegree: 0,
-                outDegree: 0,
-                cbo: 0,
-                normalizedScore: 0,
-                color: '#3b82f6',
-            };
-
-            return {
-                id: key,
-                type: 'symbolNode',
-                position: { x: 0, y: 0 }, // Will be set by layout
-                data: {
-                    label: symbol.name,
-                    symbolType: symbol.type,
-                    complexity: symbol.complexity,
-                    coupling,
-                    filePath: symbol.filePath,
-                    line: symbol.range.startLine,
-                },
-                parentId: symbol.filePath,
-            };
-        });
-
-        // Create edges
-        const edges: Edge[] = graphData.edges.map((edge, index) => ({
-            id: `edge-${index}`,
-            source: edge.source,
-            target: edge.target,
-            type: 'smoothstep',
-            animated: edge.type === 'call',
-            style: {
-                stroke:
-                    edge.type === 'call'
-                        ? '#3b82f6'
-                        : edge.type === 'import'
-                            ? '#10b981'
-                            : '#6b7280',
-                strokeWidth: 1.5,
-            },
-        }));
-
-        // Optimize edges for performance
-        const optimizedEdges = optimizeEdges(edges, 1000);
-
-        // Apply layout
-        const { nodes: layoutedNodes, edges: layoutedEdges } =
-            applyHierarchicalLayout([...fileNodes, ...symbolNodes], optimizedEdges);
-
-        return {
-            initialNodes: layoutedNodes,
-            initialEdges: layoutedEdges,
         };
-    }, [graphData]);
 
-    const [nodes, , onNodesChange] = useNodesState(initialNodes);
-    const [edges, , onEdgesChange] = useEdgesState(initialEdges);
+        runLayout();
+    }, [graphData, setNodes, setEdges]);
 
     const handleNodeClick = useCallback(
         (_event: React.MouseEvent, node: Node) => {
@@ -164,32 +201,39 @@ const GraphCanvas = memo(({ graphData, onNodeClick }: GraphCanvasProps) => {
     }
 
     return (
-        <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodeClick={handleNodeClick}
-            nodeTypes={nodeTypes}
-            fitView
-            minZoom={0.1}
-            maxZoom={2}
-            defaultEdgeOptions={{
-                type: 'smoothstep',
-            }}
-        >
-            <Background />
-            <Controls />
-            <MiniMap
-                nodeColor={(node) => {
-                    if (node.type === 'fileNode') {
-                        return '#3b82f6';
-                    }
-                    return (node.data as any).coupling?.color || '#6b7280';
+        <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+            {isLayouting && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+                    <div className="text-white font-semibold">Calculating Layout...</div>
+                </div>
+            )}
+            <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onNodeClick={handleNodeClick}
+                nodeTypes={nodeTypes}
+                fitView
+                minZoom={0.1}
+                maxZoom={2}
+                defaultEdgeOptions={{
+                    type: 'smoothstep',
                 }}
-                maskColor="rgba(0, 0, 0, 0.5)"
-            />
-        </ReactFlow>
+            >
+                <Background />
+                <Controls />
+                <MiniMap
+                    nodeColor={(node) => {
+                        if (node.type === 'fileNode') {
+                            return '#3b82f6';
+                        }
+                        return (node.data as any).coupling?.color || '#6b7280';
+                    }}
+                    maskColor="rgba(0, 0, 0, 0.5)"
+                />
+            </ReactFlow>
+        </div>
     );
 });
 

@@ -24,6 +24,12 @@ export class WorkerManager {
     private requestIdCounter: number = 0;
     private isReady: boolean = false;
     private readonly REQUEST_TIMEOUT = 30000; // 30 seconds
+    private restartCallback: (() => void) | null = null;
+    private workerPath: string | null = null;
+
+    constructor(onRestart?: () => void) {
+        this.restartCallback = onRestart || null;
+    }
 
     /**
      * Start the worker
@@ -33,6 +39,7 @@ export class WorkerManager {
             throw new Error('Worker already started');
         }
 
+        this.workerPath = workerPath;
         this.worker = new Worker(workerPath);
 
         // Set up message handler
@@ -43,17 +50,37 @@ export class WorkerManager {
         // Set up error handler
         this.worker.on('error', (error) => {
             console.error('Worker error:', error);
-            this.rejectAllPending(new Error(`Worker error: ${error.message}`));
+            // We don't verify here, let exit handler take care of restart
         });
 
         // Set up exit handler
-        this.worker.on('exit', (code) => {
-            if (code !== 0) {
-                console.error(`Worker exited with code ${code}`);
-                this.rejectAllPending(new Error(`Worker exited with code ${code}`));
-            }
-            this.worker = null;
+        this.worker.on('exit', async (code) => {
             this.isReady = false;
+            this.worker = null;
+
+            if (code !== 0) {
+                console.error(`Worker exited with code ${code}. Restarting...`);
+                // Reject all pending requests
+                this.rejectAllPending(new Error(`Worker exited with code ${code}`));
+
+                // Attempt restart
+                if (this.workerPath) {
+                    try {
+                        console.log('Attempting to restart worker...');
+                        await this.start(this.workerPath);
+                        console.log('Worker restarted successfully');
+
+                        // Notify extension
+                        if (this.restartCallback) {
+                            this.restartCallback();
+                        }
+                    } catch (error) {
+                        console.error('Failed to restart worker:', error);
+                    }
+                }
+            } else {
+                console.log('Worker exited cleanly');
+            }
         });
 
         // Wait for ready signal
@@ -268,6 +295,21 @@ export class WorkerManager {
             type: 'clear',
             id: this.generateId(),
         });
+    }
+
+    /**
+     * Configure AI settings
+     */
+    async configureAI(config: { vertexProject?: string; groqApiKey?: string }): Promise<void> {
+        const response = await this.sendRequest({
+            type: 'configure-ai',
+            id: this.generateId(),
+            config
+        });
+
+        if (response.type !== 'configure-ai-complete') {
+            throw new Error('Unexpected response type');
+        }
     }
 
     /**

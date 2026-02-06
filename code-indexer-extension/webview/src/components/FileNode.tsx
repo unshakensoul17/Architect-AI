@@ -22,8 +22,9 @@ const FileNode = memo(({ data }: NodeProps<Node<FileNodeData>>) => {
             style={{
                 backgroundColor: 'var(--vscode-sideBar-background, #252526)',
                 borderColor: getBorderColor(),
-                minWidth: isCollapsed ? '200px' : '300px',
-                minHeight: isCollapsed ? '80px' : '150px',
+                width: '100%',
+                height: '100%',
+                transition: 'all 0.3s ease',
             }}
         >
             <Handle type="target" position={Position.Top} className="w-3 h-3" />

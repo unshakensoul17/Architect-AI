@@ -5,7 +5,8 @@
 import Database from 'better-sqlite3';
 import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { eq, like } from 'drizzle-orm';
-import { symbols, edges, files, meta, NewSymbol, NewEdge, Symbol, Edge, File } from './schema';
+import { symbols, edges, files, meta, aiCache, NewSymbol, NewEdge, Symbol, Edge, File, SymbolContext, AICacheEntry } from './schema';
+import { computeDomainHealth, type DomainHealth } from '../domain/health';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -23,6 +24,7 @@ export interface GraphExport {
             endColumn: number;
         };
         complexity: number;
+        domain?: string | null;
     }[];
     edges: {
         id: number;
@@ -34,6 +36,11 @@ export interface GraphExport {
         filePath: string;
         contentHash: string;
         lastIndexedAt: string;
+    }[];
+    domains: {
+        domain: string;
+        symbolCount: number;
+        health: DomainHealth;
     }[];
 }
 
@@ -103,7 +110,45 @@ export class CodeIndexDatabase {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS ai_cache (
+        hash TEXT PRIMARY KEY,
+        response TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS domain_metadata (
+        domain TEXT PRIMARY KEY,
+        health_score INTEGER NOT NULL,
+        complexity INTEGER NOT NULL,
+        coupling INTEGER NOT NULL,
+        symbol_count INTEGER NOT NULL,
+        last_updated TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS domain_cache (
+        symbol_id INTEGER PRIMARY KEY,
+        domain TEXT NOT NULL,
+        confidence INTEGER NOT NULL,
+        cached_at TEXT NOT NULL
+      );
     `);
+
+        // Migration: Add domain column to existing symbols table if it doesn't exist
+        try {
+            const tableInfo = this.db.prepare("PRAGMA table_info(symbols)").all() as Array<{ name: string }>;
+            const hasDomainColumn = tableInfo.some(col => col.name === 'domain');
+
+            if (!hasDomainColumn) {
+                console.log('Migrating database: Adding domain column to symbols table...');
+                this.db.exec('ALTER TABLE symbols ADD COLUMN domain TEXT');
+                this.db.exec('CREATE INDEX IF NOT EXISTS idx_symbols_domain ON symbols(domain)');
+                console.log('Migration complete: domain column added successfully');
+            }
+        } catch (error) {
+            console.error('Migration error:', error);
+            // Don't throw - table might not exist yet on first run
+        }
     }
 
     /**
@@ -115,8 +160,8 @@ export class CodeIndexDatabase {
 
         const insertStmt = this.db.prepare(`
       INSERT INTO symbols (name, type, file_path, range_start_line, range_start_column, 
-                          range_end_line, range_end_column, complexity)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                          range_end_line, range_end_column, complexity, domain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
         const transaction = this.db.transaction((items: NewSymbol[]) => {
@@ -129,7 +174,8 @@ export class CodeIndexDatabase {
                     item.rangeStartColumn,
                     item.rangeEndLine,
                     item.rangeEndColumn,
-                    item.complexity || 0
+                    item.complexity || 0,
+                    item.domain || null
                 );
                 insertedIds.push(Number(info.lastInsertRowid));
             }
@@ -224,6 +270,138 @@ export class CodeIndexDatabase {
         return { symbol, edges: symbolEdges };
     }
 
+    // ========== Context Assembly (cAST) ==========
+
+    /**
+     * Symbol context including code and neighbors for AI prompts
+     */
+    getSymbolWithContext(symbolId: number): SymbolContext | null {
+        // Get the target symbol
+        const symbol = this.drizzle
+            .select()
+            .from(symbols)
+            .where(eq(symbols.id, symbolId))
+            .get();
+
+        if (!symbol) return null;
+
+        // Get outgoing edges (this symbol depends on...)
+        const outgoingEdges = this.drizzle
+            .select()
+            .from(edges)
+            .where(eq(edges.sourceId, symbolId))
+            .all();
+
+        // Get incoming edges (...depends on this symbol)
+        const incomingEdges = this.drizzle
+            .select()
+            .from(edges)
+            .where(eq(edges.targetId, symbolId))
+            .all();
+
+        // Collect neighbor IDs (1st-degree connections)
+        const neighborIds = new Set<number>();
+        outgoingEdges.forEach(e => neighborIds.add(e.targetId));
+        incomingEdges.forEach(e => neighborIds.add(e.sourceId));
+
+        // Fetch all neighbors in one query
+        const neighbors: Symbol[] = [];
+        if (neighborIds.size > 0) {
+            const neighborIdArray = Array.from(neighborIds);
+            const stmt = this.db.prepare(`
+                SELECT * FROM symbols WHERE id IN (${neighborIdArray.map(() => '?').join(',')})
+            `);
+            const results = stmt.all(...neighborIdArray) as any[];
+            for (const row of results) {
+                neighbors.push({
+                    id: row.id,
+                    name: row.name,
+                    type: row.type,
+                    filePath: row.file_path,
+                    rangeStartLine: row.range_start_line,
+                    rangeStartColumn: row.range_start_column,
+                    rangeEndLine: row.range_end_line,
+                    rangeEndColumn: row.range_end_column,
+                    complexity: row.complexity,
+                });
+            }
+        }
+
+        return {
+            symbol,
+            neighbors,
+            incomingEdges,
+            outgoingEdges,
+        };
+    }
+
+    /**
+     * Get symbol by name (for MCP tool queries)
+     */
+    getSymbolByName(name: string): Symbol | null {
+        return this.drizzle
+            .select()
+            .from(symbols)
+            .where(eq(symbols.name, name))
+            .get() || null;
+    }
+
+    /**
+     * Get symbol by ID (for MCP tool queries)
+     */
+    getSymbolById(symbolId: number): Symbol | null {
+        return this.drizzle
+            .select()
+            .from(symbols)
+            .where(eq(symbols.id, symbolId))
+            .get() || null;
+    }
+
+    /**
+     * Get dependencies for a symbol (for MCP tool)
+     */
+    getDependencies(symbolId: number, direction: 'incoming' | 'outgoing' | 'both' = 'both'): {
+        incoming: { edge: Edge; symbol: Symbol }[];
+        outgoing: { edge: Edge; symbol: Symbol }[];
+    } {
+        const result: {
+            incoming: { edge: Edge; symbol: Symbol }[];
+            outgoing: { edge: Edge; symbol: Symbol }[];
+        } = { incoming: [], outgoing: [] };
+
+        if (direction === 'outgoing' || direction === 'both') {
+            const outEdges = this.drizzle
+                .select()
+                .from(edges)
+                .where(eq(edges.sourceId, symbolId))
+                .all();
+
+            for (const edge of outEdges) {
+                const symbol = this.getSymbolById(edge.targetId);
+                if (symbol) {
+                    result.outgoing.push({ edge, symbol });
+                }
+            }
+        }
+
+        if (direction === 'incoming' || direction === 'both') {
+            const inEdges = this.drizzle
+                .select()
+                .from(edges)
+                .where(eq(edges.targetId, symbolId))
+                .all();
+
+            for (const edge of inEdges) {
+                const symbol = this.getSymbolById(edge.sourceId);
+                if (symbol) {
+                    result.incoming.push({ edge, symbol });
+                }
+            }
+        }
+
+        return result;
+    }
+
     /**
      * Delete all symbols for a given file
      * Edges are automatically deleted due to CASCADE
@@ -307,6 +485,29 @@ export class CodeIndexDatabase {
         return storedHash !== currentHash;
     }
 
+    // ========== AI Cache ==========
+
+    /**
+     * Get cached AI response
+     */
+    getAICache(hash: string): AICacheEntry | null {
+        return this.drizzle
+            .select()
+            .from(aiCache)
+            .where(eq(aiCache.hash, hash))
+            .get() || null;
+    }
+
+    /**
+     * Set cached AI response
+     */
+    setAICache(hash: string, response: string): void {
+        const now = new Date().toISOString();
+        this.db
+            .prepare('INSERT OR REPLACE INTO ai_cache (hash, response, created_at) VALUES (?, ?, ?)')
+            .run(hash, response, now);
+    }
+
     // ========== Graph Export ==========
 
     /**
@@ -323,6 +524,61 @@ export class CodeIndexDatabase {
             symbolMap.set(sym.id, sym);
         }
 
+        // Group symbols by domain
+        const symbolsByDomain = new Map<string, Symbol[]>();
+        for (const symbol of allSymbols) {
+            const domain = symbol.domain || 'unknown';
+            if (!symbolsByDomain.has(domain)) {
+                symbolsByDomain.set(domain, []);
+            }
+            symbolsByDomain.get(domain)!.push(symbol);
+        }
+
+        // Compute cross-domain edges for coupling metrics
+        const domainEdgeCounts = new Map<string, { total: number; crossDomain: number }>();
+        for (const edge of allEdges) {
+            const source = symbolMap.get(edge.sourceId);
+            const target = symbolMap.get(edge.targetId);
+
+            if (source && target) {
+                const sourceDomain = source.domain || 'unknown';
+                const targetDomain = target.domain || 'unknown';
+
+                if (!domainEdgeCounts.has(sourceDomain)) {
+                    domainEdgeCounts.set(sourceDomain, { total: 0, crossDomain: 0 });
+                }
+
+                const counts = domainEdgeCounts.get(sourceDomain)!;
+                counts.total++;
+                if (sourceDomain !== targetDomain) {
+                    counts.crossDomain++;
+                }
+            }
+        }
+
+        // Compute domain health metrics
+        const domains: { domain: string; symbolCount: number; health: DomainHealth }[] = [];
+        for (const [domain, domainSymbols] of symbolsByDomain) {
+            const edgeStats = domainEdgeCounts.get(domain) || { total: 0, crossDomain: 0 };
+            const health = computeDomainHealth(
+                domain,
+                domainSymbols,
+                edgeStats.crossDomain,
+                edgeStats.total
+            );
+
+            // Store health metrics in database
+            this.setDomainMetadata(
+                domain,
+                health.healthScore,
+                health.avgComplexity,
+                health.coupling,
+                health.symbolCount
+            );
+
+            domains.push({ domain, symbolCount: domainSymbols.length, health });
+        }
+
         return {
             symbols: allSymbols.map((s) => ({
                 id: s.id,
@@ -336,6 +592,7 @@ export class CodeIndexDatabase {
                     endColumn: s.rangeEndColumn,
                 },
                 complexity: s.complexity,
+                domain: s.domain,
             })),
             edges: allEdges.map((e) => {
                 const sourceSymbol = symbolMap.get(e.sourceId);
@@ -356,6 +613,7 @@ export class CodeIndexDatabase {
                 contentHash: f.contentHash,
                 lastIndexedAt: f.lastIndexedAt,
             })),
+            domains: domains.sort((a, b) => b.health.healthScore - a.health.healthScore),
         };
     }
 
@@ -380,6 +638,131 @@ export class CodeIndexDatabase {
             edgeCount: edgeCount.count,
             fileCount: fileCount.count,
         };
+    }
+
+    // ========== Domain Operations ==========
+
+    /**
+     * Get symbols by domain
+     */
+    getSymbolsByDomain(domain: string): Symbol[] {
+        return this.drizzle
+            .select()
+            .from(symbols)
+            .where(eq(symbols.domain, domain))
+            .all();
+    }
+
+    /**
+     * Get domain statistics
+     */
+    getDomainStats(): { domain: string; symbolCount: number; avgComplexity: number }[] {
+        const results = this.db.prepare(`
+            SELECT 
+                domain,
+                COUNT(*) as symbol_count,
+                AVG(complexity) as avg_complexity
+            FROM symbols
+            WHERE domain IS NOT NULL
+            GROUP BY domain
+            ORDER BY symbol_count DESC
+        `).all() as any[];
+
+        return results.map(r => ({
+            domain: r.domain,
+            symbolCount: r.symbol_count,
+            avgComplexity: Math.round(r.avg_complexity * 10) / 10,
+        }));
+    }
+
+    /**
+     * Set domain metadata (health metrics)
+     */
+    setDomainMetadata(
+        domain: string,
+        healthScore: number,
+        complexity: number,
+        coupling: number,
+        symbolCount: number
+    ): void {
+        const now = new Date().toISOString();
+        this.db.prepare(`
+            INSERT OR REPLACE INTO domain_metadata 
+            (domain, health_score, complexity, coupling, symbol_count, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `).run(domain, healthScore, complexity, coupling, symbolCount, now);
+    }
+
+    /**
+     * Get domain metadata
+     */
+    getDomainMetadata(domain: string): {
+        healthScore: number;
+        complexity: number;
+        coupling: number;
+        symbolCount: number;
+        lastUpdated: string;
+    } | null {
+        const result = this.db.prepare(`
+            SELECT * FROM domain_metadata WHERE domain = ?
+        `).get(domain) as any;
+
+        if (!result) return null;
+
+        return {
+            healthScore: result.health_score,
+            complexity: result.complexity,
+            coupling: result.coupling,
+            symbolCount: result.symbol_count,
+            lastUpdated: result.last_updated,
+        };
+    }
+
+    /**
+     * Get all domain metadata
+     */
+    getAllDomainMetadata(): {
+        domain: string;
+        healthScore: number;
+        complexity: number;
+        coupling: number;
+        symbolCount: number;
+        lastUpdated: string;
+    }[] {
+        const results = this.db.prepare(`
+            SELECT * FROM domain_metadata ORDER BY health_score DESC
+        `).all() as any[];
+
+        return results.map(r => ({
+            domain: r.domain,
+            healthScore: r.health_score,
+            complexity: r.complexity,
+            coupling: r.coupling,
+            symbolCount: r.symbol_count,
+            lastUpdated: r.last_updated,
+        }));
+    }
+
+    /**
+     * Set domain from cache
+     */
+    setDomainCache(symbolId: number, domain: string, confidence: number): void {
+        const now = new Date().toISOString();
+        this.db.prepare(`
+            INSERT OR REPLACE INTO domain_cache (symbol_id, domain, confidence, cached_at)
+            VALUES (?, ?, ?, ?)
+        `).run(symbolId, domain, confidence, now);
+    }
+
+    /**
+     * Get cached domain classification
+     */
+    getDomainCache(symbolId: number): { domain: string; confidence: number } | null {
+        const result = this.db.prepare(`
+            SELECT domain, confidence FROM domain_cache WHERE symbol_id = ?
+        `).get(symbolId) as any;
+
+        return result || null;
     }
 
     /**

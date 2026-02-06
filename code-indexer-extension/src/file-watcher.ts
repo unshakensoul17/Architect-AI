@@ -157,10 +157,17 @@ export class FileWatcherManager {
         const excludePatterns = [
             'node_modules',
             '.git',
+            'venv',
+            '.venv',
             'dist',
             'build',
+            'out',
             '.vscode',
             '__pycache__',
+            '.cache',
+            '.pytest_cache',
+            '.next',
+            '.svelte-kit',
         ];
 
         return excludePatterns.some((pattern) => filePath.includes(pattern));

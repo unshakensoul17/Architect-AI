@@ -12,6 +12,7 @@ import {
     isWorkerRequest,
     SymbolResult,
 } from './message-protocol';
+import { AIOrchestrator, createOrchestrator } from '../ai';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -20,6 +21,7 @@ class IndexWorker {
     private parser: TreeSitterParser;
     private extractor: SymbolExtractor;
     private isReady: boolean = false;
+    private orchestrator: AIOrchestrator | null = null;
 
     // Global symbol map for cross-file resolution
     private globalSymbolMap: Map<string, number> = new Map();
@@ -38,12 +40,18 @@ class IndexWorker {
      */
     async initialize(): Promise<void> {
         try {
+            // Start memory monitoring
+            this.startMemoryMonitor();
+
             // Initialize database in temp directory
             const dbPath = path.join(os.tmpdir(), 'code-indexer', 'index.db');
             this.db = new CodeIndexDatabase(dbPath);
 
             // Initialize tree-sitter parser
             await this.parser.initialize();
+
+            // Initialize AI Orchestrator
+            this.orchestrator = createOrchestrator(this.db);
 
             this.isReady = true;
 
@@ -54,6 +62,39 @@ class IndexWorker {
         } catch (error) {
             console.error('Worker initialization failed:', error);
             throw error;
+        }
+    }
+
+    /**
+     * Start periodic memory monitoring
+     */
+    private startMemoryMonitor(): void {
+        setInterval(() => {
+            this.checkMemoryUsage();
+        }, 5000); // Check every 5 seconds
+    }
+
+    /**
+     * Check memory usage and exit if limit exceeded
+     */
+    private checkMemoryUsage(): void {
+        const usage = process.memoryUsage();
+        const heapUsedMB = Math.round(usage.heapUsed / 1024 / 1024);
+
+        // 512MB limit
+        if (heapUsedMB > 512) {
+            const error = `Memory limit exceeded: ${heapUsedMB}MB (limit: 512MB)`;
+            console.error(error);
+            // Send explicit error message before exiting to ensure manager knows why
+            this.sendMessage({
+                type: 'error',
+                id: 'system',
+                error: error,
+            });
+            // Allow time for message to flush
+            setTimeout(() => {
+                process.exit(137); // Standard OOM exit code
+            }, 100);
         }
     }
 
@@ -102,6 +143,26 @@ class IndexWorker {
 
                 case 'shutdown':
                     this.handleShutdown();
+                    break;
+
+                case 'ai-query':
+                    this.handleAIQuery(request);
+                    break;
+
+                case 'ai-classify-intent':
+                    this.handleAIClassifyIntent(request);
+                    break;
+
+                case 'mcp-tool-call':
+                    this.handleMCPToolCall(request);
+                    break;
+
+                case 'get-context':
+                    this.handleGetContext(request);
+                    break;
+
+                case 'configure-ai':
+                    this.handleConfigureAI(request);
                     break;
 
                 default:
@@ -405,6 +466,164 @@ class IndexWorker {
             this.db.close();
         }
         process.exit(0);
+    }
+
+    /**
+     * Handle AI Query
+     */
+    private async handleAIQuery(request: any): Promise<void> {
+        if (!this.orchestrator) {
+            this.sendError(request.id, 'AI Orchestrator not initialized');
+            return;
+        }
+
+        try {
+            const result = await this.orchestrator.processQuery(request.query, {
+                symbolId: request.symbolId,
+                symbolName: request.symbolName,
+                analysisType: request.analysisType,
+            });
+
+            this.sendMessage({
+                type: 'ai-query-result',
+                id: request.id,
+                content: result.content,
+                model: result.model,
+                intent: {
+                    type: result.intent.type,
+                    confidence: result.intent.confidence,
+                },
+                latencyMs: result.latencyMs,
+                contextIncluded: result.contextIncluded,
+                neighborCount: result.neighborCount,
+            });
+        } catch (error) {
+            this.sendError(request.id, `AI Query failed: ${(error as Error).message}`);
+        }
+    }
+
+    /**
+     * Handle AI Intent Classification
+     */
+    private handleAIClassifyIntent(request: any): void {
+        if (!this.orchestrator) {
+            this.sendError(request.id, 'AI Orchestrator not initialized');
+            return;
+        }
+
+        const intent = this.orchestrator.classifyIntent(request.query);
+
+        this.sendMessage({
+            type: 'ai-intent-result',
+            id: request.id,
+            intentType: intent.type,
+            confidence: intent.confidence,
+            matchedPattern: intent.matchedPattern,
+        });
+    }
+
+    /**
+     * Handle MCP Tool Call
+     */
+    private async handleMCPToolCall(request: any): Promise<void> {
+        if (!this.orchestrator) {
+            this.sendError(request.id, 'AI Orchestrator not initialized');
+            return;
+        }
+
+        const response = await this.orchestrator.executeMCPTool({
+            toolName: request.toolName,
+            arguments: request.arguments,
+        });
+
+        this.sendMessage({
+            type: 'mcp-tool-result',
+            id: request.id,
+            success: response.success,
+            toolName: response.toolName,
+            result: response.result,
+            error: response.error,
+        });
+    }
+
+    /**
+     * Handle Get Context
+     */
+    private handleGetContext(request: any): void {
+        if (!this.db) {
+            this.sendError(request.id, 'Database not initialized');
+            return;
+        }
+
+        const context = this.db.getSymbolWithContext(request.symbolId);
+
+        if (!context) {
+            this.sendMessage({
+                type: 'context-result',
+                id: request.id,
+                symbol: null,
+                neighbors: [],
+                incomingEdgeCount: 0,
+                outgoingEdgeCount: 0,
+            });
+            return;
+        }
+
+        this.sendMessage({
+            type: 'context-result',
+            id: request.id,
+            symbol: {
+                id: context.symbol.id,
+                name: context.symbol.name,
+                type: context.symbol.type,
+                filePath: context.symbol.filePath,
+                range: {
+                    startLine: context.symbol.rangeStartLine,
+                    startColumn: context.symbol.rangeStartColumn,
+                    endLine: context.symbol.rangeEndLine,
+                    endColumn: context.symbol.rangeEndColumn,
+                },
+                complexity: context.symbol.complexity,
+            },
+            neighbors: context.neighbors.map(n => ({
+                id: n.id,
+                name: n.name,
+                type: n.type,
+                filePath: n.filePath,
+                range: {
+                    startLine: n.rangeStartLine,
+                    startColumn: n.rangeStartColumn,
+                    endLine: n.rangeEndLine,
+                    endColumn: n.rangeEndColumn,
+                },
+                complexity: n.complexity,
+            })),
+            incomingEdgeCount: context.incomingEdges.length,
+            outgoingEdgeCount: context.outgoingEdges.length,
+        });
+    }
+
+    /**
+     * Handle AI Configuration
+     */
+    private handleConfigureAI(request: any): void {
+        if (!this.orchestrator) {
+            // If orchestrator is not ready, we can't update it yet.
+            // But since this might be called early, we should try to initialize it or just log.
+            // However, initialize() should have been called already.
+            this.sendError(request.id, 'AI Orchestrator not initialized');
+            return;
+        }
+
+        try {
+            this.orchestrator.updateConfig(request.config);
+            this.sendMessage({
+                type: 'configure-ai-complete',
+                id: request.id
+            });
+        } catch (error) {
+            this.sendError(request.id, `Failed to update AI config: ${(error as Error).message}`);
+        }
     }
 
     /**

@@ -8,10 +8,12 @@ import * as fs from 'fs';
 import { WorkerManager } from './worker/worker-manager';
 import { FileWatcherManager } from './file-watcher';
 import { GraphWebviewProvider } from './webview-provider';
+import { HeatCodeLensProvider } from './codelens-provider';
 
 let workerManager: WorkerManager | null = null;
 let fileWatcherManager: FileWatcherManager | null = null;
 let graphWebviewProvider: GraphWebviewProvider | null = null;
+let heatCodeLensProvider: HeatCodeLensProvider | null = null;
 let outputChannel: vscode.OutputChannel;
 
 /**
@@ -23,7 +25,10 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Initialize worker
     try {
-        workerManager = new WorkerManager();
+        workerManager = new WorkerManager(() => {
+            vscode.window.showWarningMessage('Architect.ai Indexer restarted due to high memory usage.');
+            outputChannel.appendLine('Worker restarted automatically.');
+        });
         const workerPath = path.join(context.extensionPath, 'dist', 'worker', 'worker.js');
         await workerManager.start(workerPath);
         outputChannel.appendLine('Worker initialized successfully');
@@ -35,6 +40,33 @@ export async function activate(context: vscode.ExtensionContext) {
 
         // Initialize webview provider
         graphWebviewProvider = new GraphWebviewProvider(context, workerManager);
+
+        // Initialize CodeLens provider
+        heatCodeLensProvider = new HeatCodeLensProvider(workerManager);
+        context.subscriptions.push(
+            vscode.languages.registerCodeLensProvider(
+                [
+                    { scheme: 'file', language: 'typescript' },
+                    { scheme: 'file', language: 'typescriptreact' },
+                    { scheme: 'file', language: 'python' },
+                    { scheme: 'file', language: 'c' }
+                ],
+                heatCodeLensProvider
+            )
+        );
+        outputChannel.appendLine('CodeLens provider registered');
+
+        // Configure AI
+        await updateWorkerConfig();
+
+        // Listen for configuration changes
+        context.subscriptions.push(
+            vscode.workspace.onDidChangeConfiguration(async (e) => {
+                if (e.affectsConfiguration('codeIndexer')) {
+                    await updateWorkerConfig();
+                }
+            })
+        );
     } catch (error) {
         outputChannel.appendLine(`Failed to initialize worker: ${error}`);
         vscode.window.showErrorMessage('Code Indexer: Failed to initialize worker');
@@ -124,7 +156,7 @@ async function indexWorkspace() {
                 // Find all supported files
                 const files = await vscode.workspace.findFiles(
                     '**/*.{ts,tsx,py,c,h}',
-                    '**/node_modules/**'
+                    '{**/node_modules/**,**/venv/**,**/.venv/**,**/.git/**,**/dist/**,**/build/**,**/out/**,**/.cache/**,**/.vscode/**,**/__pycache__/**,**/.pytest_cache/**}'
                 );
 
                 // Prepare files for batch processing
@@ -374,4 +406,25 @@ function getLanguage(filePath: string): 'typescript' | 'python' | 'c' | null {
     }
 
     return null;
+}
+
+/**
+ * Update worker AI configuration
+ */
+async function updateWorkerConfig() {
+    if (!workerManager) return;
+
+    const config = vscode.workspace.getConfiguration('codeIndexer');
+    const vertexProject = config.get<string>('vertexProject');
+    const groqApiKey = config.get<string>('groqApiKey');
+
+    try {
+        await workerManager.configureAI({
+            vertexProject,
+            groqApiKey
+        });
+        outputChannel.appendLine('AI configuration updated');
+    } catch (error) {
+        outputChannel.appendLine(`Failed to update AI config: ${error}`);
+    }
 }

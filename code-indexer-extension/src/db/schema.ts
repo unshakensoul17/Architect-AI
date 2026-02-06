@@ -22,6 +22,7 @@ export const symbols = sqliteTable('symbols', {
     rangeEndLine: integer('range_end_line').notNull(),
     rangeEndColumn: integer('range_end_column').notNull(),
     complexity: integer('complexity').notNull().default(0),
+    domain: text('domain'), // Domain classification (auth, payment, api, etc.)
 });
 
 /**
@@ -71,3 +72,57 @@ export type File = typeof files.$inferSelect;
 export type NewFile = typeof files.$inferInsert;
 export type Meta = typeof meta.$inferSelect;
 export type NewMeta = typeof meta.$inferInsert;
+
+/**
+ * Symbol context for AI prompts (cAST)
+ * Contains the target symbol plus its immediate neighbors (1st-degree connections)
+ */
+export interface SymbolContext {
+    symbol: Symbol;
+    neighbors: Symbol[];
+    outgoingEdges: Edge[];
+}
+
+/**
+ * AI Cache Table
+ * Stores AI responses to avoid redundant API calls
+ * Key: hash(node_code + neighbors_code)
+ */
+export const aiCache = sqliteTable('ai_cache', {
+    hash: text('hash').primaryKey(),
+    response: text('response').notNull(), // JSON stringified AIResponse
+    createdAt: text('created_at').notNull(),
+});
+
+export type AICacheEntry = typeof aiCache.$inferSelect;
+export type NewAICacheEntry = typeof aiCache.$inferInsert;
+
+/**
+ * Domain Metadata Table
+ * Stores computed health metrics for each domain
+ */
+export const domainMetadata = sqliteTable('domain_metadata', {
+    domain: text('domain').primaryKey(),
+    healthScore: integer('health_score').notNull(),
+    complexity: integer('complexity').notNull(),
+    coupling: integer('coupling').notNull(),
+    symbolCount: integer('symbol_count').notNull(),
+    lastUpdated: text('last_updated').notNull(),
+});
+
+export type DomainMetadata = typeof domainMetadata.$inferSelect;
+export type NewDomainMetadata = typeof domainMetadata.$inferInsert;
+
+/**
+ * Domain Cache Table
+ * Stores AI-classified domains to avoid redundant API calls
+ */
+export const domainCache = sqliteTable('domain_cache', {
+    symbolId: integer('symbol_id').primaryKey(),
+    domain: text('domain').notNull(),
+    confidence: integer('confidence').notNull(), // 0-100 scale
+    cachedAt: text('cached_at').notNull(),
+});
+
+export type DomainCacheEntry = typeof domainCache.$inferSelect;
+export type NewDomainCacheEntry = typeof domainCache.$inferInsert;
