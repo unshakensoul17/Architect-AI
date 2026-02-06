@@ -1,0 +1,85 @@
+// Types for graph data from extension
+export interface GraphSymbol {
+    id: number;
+    name: string;
+    type: 'function' | 'method' | 'class' | 'interface' | 'enum' | 'variable' | 'type';
+    filePath: string;
+    range: {
+        startLine: number;
+        startColumn: number;
+        endLine: number;
+        endColumn: number;
+    };
+    complexity: number;
+}
+
+export interface GraphEdge {
+    id: number;
+    source: string; // Format: "filePath:symbolName:line"
+    target: string;
+    type: 'call' | 'import' | 'extends' | 'implements';
+}
+
+export interface GraphFile {
+    filePath: string;
+    contentHash: string;
+    lastIndexedAt: string;
+}
+
+export interface GraphData {
+    symbols: GraphSymbol[];
+    edges: GraphEdge[];
+    files: GraphFile[];
+}
+
+// VS Code API for webview
+export interface VSCodeAPI {
+    postMessage(message: any): void;
+    getState(): any;
+    setState(state: any): void;
+}
+
+declare global {
+    interface Window {
+        acquireVsCodeApi(): VSCodeAPI;
+    }
+}
+
+// Message types between extension and webview
+export type ExtensionMessage =
+    | { type: 'graph-data'; data: GraphData }
+    | { type: 'theme-changed'; theme: 'light' | 'dark' };
+
+export type WebviewMessage =
+    | { type: 'ready' }
+    | { type: 'request-graph' }
+    | { type: 'node-selected'; nodeId: string }
+    | { type: 'export-image'; format: 'png' | 'svg' };
+
+// Coupling metrics
+export interface CouplingMetrics {
+    nodeId: string;
+    inDegree: number;
+    outDegree: number;
+    cbo: number; // Coupling Between Objects
+    normalizedScore: number; // 0-1 range for color mapping
+    color: string; // Hex color from gradient
+}
+
+// React Flow node data
+export interface FileNodeData extends Record<string, unknown> {
+    label: string;
+    filePath: string;
+    symbolCount: number;
+    avgCoupling: number;
+    collapsed: boolean;
+}
+
+export interface SymbolNodeData extends Record<string, unknown> {
+    label: string;
+    symbolType: GraphSymbol['type'];
+    complexity: number;
+    coupling: CouplingMetrics;
+    filePath: string;
+    line: number;
+}

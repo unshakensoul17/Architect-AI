@@ -7,9 +7,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { WorkerManager } from './worker/worker-manager';
 import { FileWatcherManager } from './file-watcher';
+import { GraphWebviewProvider } from './webview-provider';
 
 let workerManager: WorkerManager | null = null;
 let fileWatcherManager: FileWatcherManager | null = null;
+let graphWebviewProvider: GraphWebviewProvider | null = null;
 let outputChannel: vscode.OutputChannel;
 
 /**
@@ -30,6 +32,9 @@ export async function activate(context: vscode.ExtensionContext) {
         fileWatcherManager = new FileWatcherManager(workerManager, outputChannel);
         fileWatcherManager.start();
         outputChannel.appendLine('File watcher started');
+
+        // Initialize webview provider
+        graphWebviewProvider = new GraphWebviewProvider(context, workerManager);
     } catch (error) {
         outputChannel.appendLine(`Failed to initialize worker: ${error}`);
         vscode.window.showErrorMessage('Code Indexer: Failed to initialize worker');
@@ -64,6 +69,12 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('codeIndexer.toggleFileWatcher', async () => {
             await toggleFileWatcher();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('codeIndexer.visualizeGraph', async () => {
+            await visualizeGraph();
         })
     );
 
@@ -309,6 +320,24 @@ async function exportGraph() {
     } catch (error) {
         vscode.window.showErrorMessage(`Export failed: ${error}`);
         outputChannel.appendLine(`Export failed: ${error}`);
+    }
+}
+
+/**
+ * Visualize code graph
+ */
+async function visualizeGraph() {
+    if (!graphWebviewProvider) {
+        vscode.window.showErrorMessage('Graph webview provider not initialized');
+        return;
+    }
+
+    try {
+        await graphWebviewProvider.show();
+    } catch (error) {
+        vscode.window.showErrorMessage(
+            `Failed to show graph visualization: ${error instanceof Error ? error.message : String(error)}`
+        );
     }
 }
 
