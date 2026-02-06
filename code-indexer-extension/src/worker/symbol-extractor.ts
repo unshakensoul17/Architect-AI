@@ -1,6 +1,6 @@
 // Purpose: Extract symbols and edges from AST nodes
-// Flattens hierarchical AST into queryable database records
-// Preserves semantic relationships while enabling efficient queries
+// Implements visitor pattern for comprehensive code graph construction
+// Handles FunctionDeclaration, ClassDeclaration, ImportDeclaration, CallExpression
 
 import Parser from 'web-tree-sitter';
 import { NewSymbol, NewEdge } from '../db/schema';
@@ -8,11 +8,28 @@ import { NewSymbol, NewEdge } from '../db/schema';
 export interface ExtractionResult {
     symbols: NewSymbol[];
     edges: NewEdge[];
+    imports: ImportInfo[];
+    calls: CallInfo[];
+}
+
+export interface ImportInfo {
+    importedName: string;
+    localName: string;
+    sourceModule: string;
+    filePath: string;
+    line: number;
+}
+
+export interface CallInfo {
+    callerSymbolKey: string;
+    calleeName: string;
+    filePath: string;
+    line: number;
 }
 
 /**
  * Symbol Extractor
- * Traverses tree-sitter AST and extracts symbols and relationships
+ * Traverses tree-sitter AST and extracts symbols, edges, imports, and calls
  */
 export class SymbolExtractor {
     private symbols: NewSymbol[] = [];
@@ -22,6 +39,15 @@ export class SymbolExtractor {
     private filePath: string = '';
     private language: string = '';
 
+    // Import tracking
+    private imports: ImportInfo[] = [];
+
+    // Call expression tracking
+    private calls: CallInfo[] = [];
+
+    // Current context for call expression resolution
+    private currentSymbolKey: string | null = null;
+
     /**
      * Extract symbols and edges from AST
      */
@@ -30,71 +56,153 @@ export class SymbolExtractor {
         filePath: string,
         language: 'typescript' | 'python' | 'c'
     ): ExtractionResult {
+        // Reset state
         this.symbols = [];
         this.edges = [];
         this.symbolIdMap.clear();
         this.currentId = 0;
         this.filePath = filePath;
         this.language = language;
+        this.imports = [];
+        this.calls = [];
+        this.currentSymbolKey = null;
 
         const rootNode = tree.rootNode;
-        this.traverseNode(rootNode, null);
+        this.visitNode(rootNode, null);
 
         return {
             symbols: this.symbols,
             edges: this.edges,
+            imports: this.imports,
+            calls: this.calls,
         };
     }
 
     /**
-     * Recursively traverse AST nodes
+     * Get symbol ID map for cross-file edge resolution
      */
-    private traverseNode(node: Parser.SyntaxNode, parentSymbolKey: string | null): void {
-        // Extract symbol based on node type
-        const symbolKey = this.extractSymbol(node, parentSymbolKey);
+    getSymbolIdMap(): Map<string, number> {
+        return new Map(this.symbolIdMap);
+    }
 
-        // Recursively process children
+    /**
+     * Create edges from call expressions to resolved symbols
+     * Called after all files have been parsed
+     */
+    createCallEdges(
+        calls: CallInfo[],
+        globalSymbolMap: Map<string, number>
+    ): NewEdge[] {
+        const edges: NewEdge[] = [];
+
+        for (const call of calls) {
+            const sourceId = globalSymbolMap.get(call.callerSymbolKey);
+
+            // Try to find target by function name
+            for (const [key, id] of globalSymbolMap) {
+                const symbolName = key.split(':')[1];
+                if (symbolName === call.calleeName && sourceId !== undefined) {
+                    edges.push({
+                        sourceId,
+                        targetId: id,
+                        type: 'call',
+                    });
+                    break;
+                }
+            }
+        }
+
+        return edges;
+    }
+
+    /**
+     * Create edges from imports to target symbols
+     */
+    createImportEdges(
+        imports: ImportInfo[],
+        globalSymbolMap: Map<string, number>
+    ): NewEdge[] {
+        const edges: NewEdge[] = [];
+
+        for (const imp of imports) {
+            // Find symbol in the source module
+            for (const [key, id] of globalSymbolMap) {
+                const [keyPath, symbolName] = key.split(':');
+
+                // Check if this symbol matches the imported name and is from the source module
+                if (symbolName === imp.importedName) {
+                    // Try to match the source module path
+                    const normalizedSource = imp.sourceModule.replace(/^\.\//, '').replace(/\.(ts|tsx|js|jsx)$/, '');
+                    const normalizedPath = keyPath.replace(/\.(ts|tsx|js|jsx)$/, '');
+
+                    if (normalizedPath.endsWith(normalizedSource)) {
+                        // Find the symbol that did the import (file-level pseudo symbol or first function)
+                        const importerKey = `${imp.filePath}:${imp.localName}:${imp.line}`;
+                        const importerId = globalSymbolMap.get(importerKey);
+
+                        if (importerId !== undefined) {
+                            edges.push({
+                                sourceId: importerId,
+                                targetId: id,
+                                type: 'import',
+                            });
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        return edges;
+    }
+
+    /**
+     * Visitor pattern: traverse AST node
+     */
+    private visitNode(node: Parser.SyntaxNode, parentSymbolKey: string | null): void {
+        // First, handle symbol extraction for this node
+        const symbolKey = this.extractSymbolFromNode(node, parentSymbolKey);
+
+        // Extract import declarations
+        this.extractImports(node);
+
+        // Extract call expressions
+        this.extractCallExpression(node, symbolKey || parentSymbolKey);
+
+        // Update current context for nested processing
+        const contextKey = symbolKey || parentSymbolKey;
+
+        // Recursively process all children
         for (let i = 0; i < node.childCount; i++) {
-            this.traverseNode(node.child(i)!, symbolKey || parentSymbolKey);
+            const child = node.child(i);
+            if (child) {
+                this.visitNode(child, contextKey);
+            }
         }
     }
 
     /**
-     * Extract symbol from node and create edges
+     * Extract symbol from current node if it's a declaration
      */
-    private extractSymbol(
+    private extractSymbolFromNode(
         node: Parser.SyntaxNode,
         parentSymbolKey: string | null
     ): string | null {
-        const nodeType = node.type;
-        let symbolType: string | null = null;
-        let symbolName: string | null = null;
+        const symbolInfo = this.getSymbolInfo(node);
 
-        // Language-specific symbol extraction
-        if (this.language === 'typescript') {
-            symbolType = this.extractTypeScriptSymbol(node);
-            symbolName = this.getNodeName(node);
-        } else if (this.language === 'python') {
-            symbolType = this.extractPythonSymbol(node);
-            symbolName = this.getNodeName(node);
-        } else if (this.language === 'c') {
-            symbolType = this.extractCSymbol(node);
-            symbolName = this.getNodeName(node);
-        }
-
-        if (!symbolType || !symbolName) {
-            // Also check for import/call relationships
-            this.extractEdges(node, parentSymbolKey);
+        if (!symbolInfo) {
             return null;
         }
+
+        const { type, name } = symbolInfo;
 
         // Calculate complexity
         const complexity = this.calculateComplexity(node);
 
         // Create symbol
         const symbol: NewSymbol = {
-            name: symbolName,
-            type: symbolType,
+            name,
+            type,
             filePath: this.filePath,
             rangeStartLine: node.startPosition.row + 1,
             rangeStartColumn: node.startPosition.column,
@@ -103,7 +211,7 @@ export class SymbolExtractor {
             complexity,
         };
 
-        const symbolKey = `${this.filePath}:${symbolName}:${node.startPosition.row}`;
+        const symbolKey = `${this.filePath}:${name}:${node.startPosition.row}`;
         this.symbols.push(symbol);
         this.symbolIdMap.set(symbolKey, this.currentId);
         this.currentId++;
@@ -112,112 +220,285 @@ export class SymbolExtractor {
     }
 
     /**
-     * Extract TypeScript-specific symbols
+     * Get symbol info based on node type and language
      */
-    private extractTypeScriptSymbol(node: Parser.SyntaxNode): string | null {
+    private getSymbolInfo(node: Parser.SyntaxNode): { type: string; name: string } | null {
+        if (this.language === 'typescript') {
+            return this.getTypeScriptSymbolInfo(node);
+        } else if (this.language === 'python') {
+            return this.getPythonSymbolInfo(node);
+        } else if (this.language === 'c') {
+            return this.getCSymbolInfo(node);
+        }
+        return null;
+    }
+
+    /**
+     * Extract TypeScript symbol info
+     */
+    private getTypeScriptSymbolInfo(node: Parser.SyntaxNode): { type: string; name: string } | null {
         const typeMap: Record<string, string> = {
             function_declaration: 'function',
             method_definition: 'method',
             class_declaration: 'class',
             interface_declaration: 'interface',
             type_alias_declaration: 'type',
-            variable_declaration: 'variable',
-            lexical_declaration: 'variable',
             enum_declaration: 'enum',
-            arrow_function: 'function',
-            function_expression: 'function',
         };
 
-        return typeMap[node.type] || null;
+        const type = typeMap[node.type];
+        if (!type) {
+            // Handle arrow functions and variable declarations specially
+            if (node.type === 'lexical_declaration' || node.type === 'variable_declaration') {
+                return this.extractVariableDeclaration(node);
+            }
+            return null;
+        }
+
+        const name = this.getIdentifierName(node);
+        if (!name) return null;
+
+        return { type, name };
     }
 
     /**
-     * Extract Python-specific symbols
+     * Handle variable/const declarations (may contain arrow functions)
      */
-    private extractPythonSymbol(node: Parser.SyntaxNode): string | null {
+    private extractVariableDeclaration(node: Parser.SyntaxNode): { type: string; name: string } | null {
+        const declarator = node.children.find(c => c.type === 'variable_declarator');
+        if (!declarator) return null;
+
+        const identifier = declarator.children.find(c => c.type === 'identifier');
+        if (!identifier) return null;
+
+        // Check if the value is an arrow function
+        const value = declarator.children.find(c =>
+            c.type === 'arrow_function' || c.type === 'function_expression'
+        );
+
+        if (value) {
+            return { type: 'function', name: identifier.text };
+        }
+
+        return { type: 'variable', name: identifier.text };
+    }
+
+    /**
+     * Extract Python symbol info
+     */
+    private getPythonSymbolInfo(node: Parser.SyntaxNode): { type: string; name: string } | null {
         const typeMap: Record<string, string> = {
             function_definition: 'function',
             class_definition: 'class',
-            decorated_definition: 'decorator',
         };
 
-        return typeMap[node.type] || null;
+        const type = typeMap[node.type];
+        if (!type) return null;
+
+        const name = this.getIdentifierName(node);
+        if (!name) return null;
+
+        return { type, name };
     }
 
     /**
-     * Extract C-specific symbols
+     * Extract C symbol info
      */
-    private extractCSymbol(node: Parser.SyntaxNode): string | null {
+    private getCSymbolInfo(node: Parser.SyntaxNode): { type: string; name: string } | null {
         const typeMap: Record<string, string> = {
             function_definition: 'function',
-            declaration: 'variable',
             struct_specifier: 'struct',
             enum_specifier: 'enum',
             union_specifier: 'union',
         };
 
-        return typeMap[node.type] || null;
+        const type = typeMap[node.type];
+        if (!type) return null;
+
+        const name = this.getIdentifierName(node);
+        if (!name) return null;
+
+        return { type, name };
     }
 
     /**
-     * Get symbol name from node
+     * Get identifier name from node
      */
-    private getNodeName(node: Parser.SyntaxNode): string | null {
-        // Try to find identifier child
-        const identifierChild = node.children.find(
-            (child) => child.type === 'identifier' ||
-                child.type === 'property_identifier' ||
-                child.type === 'type_identifier'
-        );
-
-        if (identifierChild) {
-            return identifierChild.text;
-        }
-
-        // For some nodes, the name might be in a specific child
-        if (node.type === 'variable_declaration' || node.type === 'lexical_declaration') {
-            const declarator = node.children.find((child) => child.type === 'variable_declarator');
-            if (declarator) {
-                const id = declarator.children.find((child) => child.type === 'identifier');
-                if (id) return id.text;
+    private getIdentifierName(node: Parser.SyntaxNode): string | null {
+        for (const child of node.children) {
+            if (
+                child.type === 'identifier' ||
+                child.type === 'type_identifier' ||
+                child.type === 'property_identifier'
+            ) {
+                return child.text;
             }
         }
-
-        // Handle export_statement explicitly if needed, but usually the declaration is a child
         return null;
     }
 
     /**
-     * Extract edges (imports, calls, inheritance)
+     * Extract import declarations
      */
-    private extractEdges(node: Parser.SyntaxNode, parentSymbolKey: string | null): void {
-        // Import statements
-        if (
-            node.type === 'import_statement' ||
-            node.type === 'import_from_statement' ||
-            node.type === 'import_clause'
-        ) {
-            // Track imports for future edge creation
-            // This requires tracking imported symbols
+    private extractImports(node: Parser.SyntaxNode): void {
+        if (this.language === 'typescript') {
+            this.extractTypeScriptImports(node);
+        } else if (this.language === 'python') {
+            this.extractPythonImports(node);
         }
+        // C uses #include which is handled differently (preprocessor)
+    }
 
-        // Function calls
-        if (node.type === 'call_expression') {
-            const functionName = node.children.find((child) => child.type === 'identifier');
-            if (functionName && parentSymbolKey) {
-                // Create call edge when we can resolve the target
+    /**
+     * Extract TypeScript imports
+     */
+    private extractTypeScriptImports(node: Parser.SyntaxNode): void {
+        if (node.type !== 'import_statement') return;
+
+        // Get the source module
+        const sourceNode = node.children.find(c => c.type === 'string');
+        if (!sourceNode) return;
+
+        const sourceModule = sourceNode.text.replace(/['"]/g, '');
+
+        // Find import clause
+        const importClause = node.children.find(c => c.type === 'import_clause');
+        if (!importClause) return;
+
+        // Handle named imports: import { x, y } from 'module'
+        const namedImports = importClause.children.find(c => c.type === 'named_imports');
+        if (namedImports) {
+            for (const child of namedImports.children) {
+                if (child.type === 'import_specifier') {
+                    const nameNode = child.children.find(c => c.type === 'identifier');
+                    if (nameNode) {
+                        const importedName = nameNode.text;
+                        // Check for 'as' alias
+                        const aliasNode = child.children.find((c, i, arr) =>
+                            c.type === 'identifier' && i > 0
+                        );
+                        const localName = aliasNode ? aliasNode.text : importedName;
+
+                        this.imports.push({
+                            importedName,
+                            localName,
+                            sourceModule,
+                            filePath: this.filePath,
+                            line: node.startPosition.row + 1,
+                        });
+                    }
+                }
             }
         }
 
-        // Inheritance (extends/implements)
-        if (node.type === 'class_heritage' || node.type === 'argument_list') {
-            // Track inheritance relationships
+        // Handle namespace imports: import * as ns from 'module'
+        const namespaceImport = importClause.children.find(c => c.type === 'namespace_import');
+        if (namespaceImport) {
+            const identifier = namespaceImport.children.find(c => c.type === 'identifier');
+            if (identifier) {
+                this.imports.push({
+                    importedName: '*',
+                    localName: identifier.text,
+                    sourceModule,
+                    filePath: this.filePath,
+                    line: node.startPosition.row + 1,
+                });
+            }
+        }
+
+        // Handle default imports: import x from 'module'
+        const defaultImport = importClause.children.find(c => c.type === 'identifier');
+        if (defaultImport) {
+            this.imports.push({
+                importedName: 'default',
+                localName: defaultImport.text,
+                sourceModule,
+                filePath: this.filePath,
+                line: node.startPosition.row + 1,
+            });
         }
     }
 
     /**
+     * Extract Python imports
+     */
+    private extractPythonImports(node: Parser.SyntaxNode): void {
+        if (node.type === 'import_statement') {
+            // import module
+            const nameNode = node.children.find(c => c.type === 'dotted_name');
+            if (nameNode) {
+                this.imports.push({
+                    importedName: nameNode.text,
+                    localName: nameNode.text,
+                    sourceModule: nameNode.text,
+                    filePath: this.filePath,
+                    line: node.startPosition.row + 1,
+                });
+            }
+        } else if (node.type === 'import_from_statement') {
+            // from module import x, y
+            const moduleNode = node.children.find(c => c.type === 'dotted_name');
+            const sourceModule = moduleNode?.text || '';
+
+            for (const child of node.children) {
+                if (child.type === 'dotted_name' && child !== moduleNode) {
+                    this.imports.push({
+                        importedName: child.text,
+                        localName: child.text,
+                        sourceModule,
+                        filePath: this.filePath,
+                        line: node.startPosition.row + 1,
+                    });
+                }
+            }
+        }
+    }
+
+    /**
+     * Extract call expressions
+     */
+    private extractCallExpression(node: Parser.SyntaxNode, parentSymbolKey: string | null): void {
+        if (node.type !== 'call_expression') return;
+        if (!parentSymbolKey) return;
+
+        // Get the called function name
+        const calleeName = this.getCalleeName(node);
+        if (!calleeName) return;
+
+        this.calls.push({
+            callerSymbolKey: parentSymbolKey,
+            calleeName,
+            filePath: this.filePath,
+            line: node.startPosition.row + 1,
+        });
+    }
+
+    /**
+     * Get callee name from call expression
+     */
+    private getCalleeName(node: Parser.SyntaxNode): string | null {
+        // Direct function call: foo()
+        const identifierChild = node.children.find(c => c.type === 'identifier');
+        if (identifierChild) {
+            return identifierChild.text;
+        }
+
+        // Method call: obj.method()
+        const memberExpression = node.children.find(c => c.type === 'member_expression');
+        if (memberExpression) {
+            const property = memberExpression.children.find(c =>
+                c.type === 'property_identifier'
+            );
+            if (property) {
+                return property.text;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Calculate cyclomatic complexity
-     * Counts decision points + 1
      */
     private calculateComplexity(node: Parser.SyntaxNode): number {
         let complexity = 1;
@@ -230,7 +511,7 @@ export class SymbolExtractor {
             'case',
             'catch_clause',
             'ternary_expression',
-            'binary_expression', // && and ||
+            'conditional_expression',
         ];
 
         const traverse = (n: Parser.SyntaxNode) => {
@@ -238,8 +519,19 @@ export class SymbolExtractor {
                 complexity++;
             }
 
+            // Count logical operators in binary expressions
+            if (n.type === 'binary_expression') {
+                const operator = n.children.find(c => c.type === '&&' || c.type === '||');
+                if (operator) {
+                    complexity++;
+                }
+            }
+
             for (let i = 0; i < n.childCount; i++) {
-                traverse(n.child(i)!);
+                const child = n.child(i);
+                if (child) {
+                    traverse(child);
+                }
             }
         };
 

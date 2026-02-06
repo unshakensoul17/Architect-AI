@@ -5,7 +5,7 @@
 import { parentPort } from 'worker_threads';
 import { CodeIndexDatabase } from '../db/database';
 import { TreeSitterParser } from './parser';
-import { SymbolExtractor } from './symbol-extractor';
+import { SymbolExtractor, ImportInfo, CallInfo } from './symbol-extractor';
 import {
     WorkerRequest,
     WorkerResponse,
@@ -20,6 +20,13 @@ class IndexWorker {
     private parser: TreeSitterParser;
     private extractor: SymbolExtractor;
     private isReady: boolean = false;
+
+    // Global symbol map for cross-file resolution
+    private globalSymbolMap: Map<string, number> = new Map();
+
+    // Pending imports and calls for edge resolution
+    private allImports: ImportInfo[] = [];
+    private allCalls: CallInfo[] = [];
 
     constructor() {
         this.parser = new TreeSitterParser();
@@ -65,12 +72,24 @@ class IndexWorker {
                     this.handleParse(request.id, request.filePath, request.content, request.language);
                     break;
 
+                case 'parse-batch':
+                    this.handleParseBatch(request.id, request.files);
+                    break;
+
                 case 'query-symbols':
                     this.handleQuerySymbols(request.id, request.query);
                     break;
 
                 case 'query-file':
                     this.handleQueryFile(request.id, request.filePath);
+                    break;
+
+                case 'check-file-hash':
+                    this.handleCheckFileHash(request.id, request.filePath, request.content);
+                    break;
+
+                case 'export-graph':
+                    this.handleExportGraph(request.id);
                     break;
 
                 case 'clear':
@@ -114,23 +133,45 @@ class IndexWorker {
         // Parse AST
         const tree = this.parser.parse(content, language);
 
-        // Extract symbols and edges
-        const { symbols, edges } = this.extractor.extract(tree, filePath, language);
+        // Extract symbols, imports, and calls
+        const { symbols, imports, calls } = this.extractor.extract(tree, filePath, language);
 
         // Delete existing symbols for this file (incremental update)
         this.db.deleteSymbolsByFile(filePath);
 
-        // Insert new symbols and edges in transaction
+        // Insert new symbols and get their IDs
         const symbolIds = this.db.insertSymbols(symbols);
 
-        // Map local symbol indices to database IDs for edge creation
-        const edgesWithIds = edges.map((edge) => ({
-            sourceId: symbolIds[edge.sourceId] || 0,
-            targetId: symbolIds[edge.targetId] || 0,
-            type: edge.type,
-        }));
+        // Build local symbol map for this file
+        const localSymbolMap = this.extractor.getSymbolIdMap();
 
-        this.db.insertEdges(edgesWithIds);
+        // Update global symbol map with database IDs
+        let i = 0;
+        for (const [key] of localSymbolMap) {
+            if (symbolIds[i]) {
+                this.globalSymbolMap.set(key, symbolIds[i]);
+            }
+            i++;
+        }
+
+        // Store imports and calls for later edge resolution
+        this.allImports.push(...imports);
+        this.allCalls.push(...calls);
+
+        // Create call edges within the same file
+        const callEdges = this.extractor.createCallEdges(calls, this.globalSymbolMap);
+
+        // Create import edges
+        const importEdges = this.extractor.createImportEdges(imports, this.globalSymbolMap);
+
+        // Combine all edges
+        const allEdges = [...callEdges, ...importEdges];
+
+        this.db.insertEdges(allEdges);
+
+        // Update file hash for incremental indexing
+        const contentHash = CodeIndexDatabase.computeHash(content);
+        this.db.setFileHash(filePath, contentHash);
 
         // Update last index time
         this.db.setMeta('last_index_time', new Date().toISOString());
@@ -140,7 +181,115 @@ class IndexWorker {
             type: 'parse-complete',
             id,
             symbolCount: symbols.length,
-            edgeCount: edges.length,
+            edgeCount: allEdges.length,
+        });
+    }
+
+    /**
+     * Parse multiple files in batch for better cross-file edge resolution
+     */
+    private handleParseBatch(
+        id: string,
+        files: { filePath: string; content: string; language: 'typescript' | 'python' | 'c' }[]
+    ): void {
+        if (!this.db) {
+            this.sendError(id, 'Database not initialized');
+            return;
+        }
+
+        let totalSymbols = 0;
+        const allImports: ImportInfo[] = [];
+        const allCalls: CallInfo[] = [];
+        const fileSymbolMaps: Map<string, Map<string, number>> = new Map();
+
+        // First pass: extract all symbols
+        for (const file of files) {
+            const tree = this.parser.parse(file.content, file.language);
+            const { symbols, imports, calls } = this.extractor.extract(tree, file.filePath, file.language);
+
+            // Delete existing symbols for this file
+            this.db.deleteSymbolsByFile(file.filePath);
+
+            // Insert symbols and get IDs
+            const symbolIds = this.db.insertSymbols(symbols);
+            totalSymbols += symbols.length;
+
+            // Build symbol map for this file
+            const localSymbolMap = this.extractor.getSymbolIdMap();
+            let i = 0;
+            for (const [key] of localSymbolMap) {
+                if (symbolIds[i]) {
+                    this.globalSymbolMap.set(key, symbolIds[i]);
+                }
+                i++;
+            }
+            fileSymbolMaps.set(file.filePath, localSymbolMap);
+
+            // Collect imports and calls
+            allImports.push(...imports);
+            allCalls.push(...calls);
+
+            // Update file hash
+            const contentHash = CodeIndexDatabase.computeHash(file.content);
+            this.db.setFileHash(file.filePath, contentHash);
+        }
+
+        // Second pass: create edges with full symbol knowledge
+        const callEdges = this.extractor.createCallEdges(allCalls, this.globalSymbolMap);
+        const importEdges = this.extractor.createImportEdges(allImports, this.globalSymbolMap);
+        const allEdges = [...callEdges, ...importEdges];
+
+        this.db.insertEdges(allEdges);
+
+        // Update last index time
+        this.db.setMeta('last_index_time', new Date().toISOString());
+
+        this.sendMessage({
+            type: 'parse-batch-complete',
+            id,
+            totalSymbols,
+            totalEdges: allEdges.length,
+            filesProcessed: files.length,
+        });
+    }
+
+    /**
+     * Check if file needs re-indexing based on content hash
+     */
+    private handleCheckFileHash(id: string, filePath: string, content: string): void {
+        if (!this.db) {
+            this.sendError(id, 'Database not initialized');
+            return;
+        }
+
+        const storedHash = this.db.getFileHash(filePath);
+        const currentHash = CodeIndexDatabase.computeHash(content);
+        const needsReindex = storedHash !== currentHash;
+
+        this.sendMessage({
+            type: 'file-hash-result',
+            id,
+            needsReindex,
+            storedHash,
+            currentHash,
+        });
+    }
+
+    /**
+     * Export entire graph as JSON
+     */
+    private handleExportGraph(id: string): void {
+        if (!this.db) {
+            this.sendError(id, 'Database not initialized');
+            return;
+        }
+
+        const graph = this.db.exportGraph();
+
+        this.sendMessage({
+            type: 'graph-export',
+            id,
+            graph,
         });
     }
 
@@ -216,6 +365,9 @@ class IndexWorker {
         }
 
         this.db.clearIndex();
+        this.globalSymbolMap.clear();
+        this.allImports = [];
+        this.allCalls = [];
 
         this.sendMessage({
             type: 'clear-complete',

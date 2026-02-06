@@ -5,7 +5,8 @@
   "version": "0.1.0",
   "publisher": "architect-ai",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.85.0",
+    "node": ">=20.0.0"
   },
   "categories": [
     "Programming Languages",
@@ -28,15 +29,24 @@
       {
         "command": "codeIndexer.clearIndex",
         "title": "Code Indexer: Clear Index"
+      },
+      {
+        "command": "codeIndexer.exportGraph",
+        "title": "Code Indexer: Export Graph as JSON"
+      },
+      {
+        "command": "codeIndexer.toggleFileWatcher",
+        "title": "Code Indexer: Toggle File Watcher"
       }
     ]
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "esbuild src/extension.ts src/worker/worker.ts --bundle --outdir=dist --external:vscode --external:web-tree-sitter --external:better-sqlite3 --format=cjs --platform=node --target=node18 --sourcemap",
-    "rebuild": "electron-rebuild -f -w better-sqlite3 -v 39.0.0",
+    "build": "esbuild src/extension.ts src/worker/worker.ts --bundle --outdir=dist --external:vscode --external:web-tree-sitter --external:better-sqlite3 --format=cjs --platform=node --target=node20 --sourcemap",
+    "rebuild": "npx @electron/rebuild -f -w better-sqlite3 -v 39.0.0",
+    "rebuild:node": "npm rebuild better-sqlite3",
     "watch": "npm run build -- --watch",
-    "test": "node test/validate.js",
+    "test": "npm run rebuild:node && node test/validate.js",
     "validate": "npm run build && node dist/test/validate.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
@@ -48,7 +58,7 @@
     "@types/sql.js": "^1.4.9",
     "@types/vscode": "^1.85.0",
     "drizzle-kit": "^0.20.14",
-    "electron": "^30.0.0",
+    "electron": "^39.0.0",
     "esbuild": "^0.20.0",
     "typescript": "^5.3.3"
   },

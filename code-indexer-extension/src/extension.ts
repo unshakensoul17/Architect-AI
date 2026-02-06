@@ -4,9 +4,12 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { WorkerManager } from './worker/worker-manager';
+import { FileWatcherManager } from './file-watcher';
 
 let workerManager: WorkerManager | null = null;
+let fileWatcherManager: FileWatcherManager | null = null;
 let outputChannel: vscode.OutputChannel;
 
 /**
@@ -22,6 +25,11 @@ export async function activate(context: vscode.ExtensionContext) {
         const workerPath = path.join(context.extensionPath, 'dist', 'worker', 'worker.js');
         await workerManager.start(workerPath);
         outputChannel.appendLine('Worker initialized successfully');
+
+        // Initialize file watcher for incremental indexing
+        fileWatcherManager = new FileWatcherManager(workerManager, outputChannel);
+        fileWatcherManager.start();
+        outputChannel.appendLine('File watcher started');
     } catch (error) {
         outputChannel.appendLine(`Failed to initialize worker: ${error}`);
         vscode.window.showErrorMessage('Code Indexer: Failed to initialize worker');
@@ -47,6 +55,18 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    context.subscriptions.push(
+        vscode.commands.registerCommand('codeIndexer.exportGraph', async () => {
+            await exportGraph();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('codeIndexer.toggleFileWatcher', async () => {
+            await toggleFileWatcher();
+        })
+    );
+
     outputChannel.appendLine('Code Indexer extension activated');
 }
 
@@ -54,6 +74,10 @@ export async function activate(context: vscode.ExtensionContext) {
  * Extension deactivation
  */
 export async function deactivate() {
+    if (fileWatcherManager) {
+        fileWatcherManager.stop();
+    }
+
     if (workerManager) {
         await workerManager.shutdown();
     }
@@ -92,13 +116,18 @@ async function indexWorkspace() {
                     '**/node_modules/**'
                 );
 
-                let indexed = 0;
-                let totalSymbols = 0;
+                // Prepare files for batch processing
+                const filesToParse: {
+                    filePath: string;
+                    content: string;
+                    language: 'typescript' | 'python' | 'c'
+                }[] = [];
+
+                let skipped = 0;
 
                 for (const file of files) {
                     progress.report({
-                        message: `Indexing ${path.basename(file.fsPath)} (${indexed + 1}/${files.length})`,
-                        increment: (100 / files.length),
+                        message: `Reading ${path.basename(file.fsPath)}...`,
                     });
 
                     try {
@@ -107,24 +136,49 @@ async function indexWorkspace() {
                         const language = getLanguage(file.fsPath);
 
                         if (language) {
-                            const result = await workerManager!.parseFile(file.fsPath, content, language);
-                            totalSymbols += result.symbolCount;
-                            outputChannel.appendLine(
-                                `Indexed ${file.fsPath}: ${result.symbolCount} symbols, ${result.edgeCount} edges`
+                            // Check if file needs re-indexing
+                            const needsReindex = await workerManager!.checkFileHash(
+                                file.fsPath,
+                                content
                             );
+
+                            if (needsReindex) {
+                                filesToParse.push({
+                                    filePath: file.fsPath,
+                                    content,
+                                    language,
+                                });
+                            } else {
+                                skipped++;
+                            }
                         }
                     } catch (error) {
-                        outputChannel.appendLine(`Error indexing ${file.fsPath}: ${error}`);
+                        outputChannel.appendLine(`Error reading ${file.fsPath}: ${error}`);
                     }
-
-                    indexed++;
                 }
 
+                if (filesToParse.length === 0) {
+                    vscode.window.showInformationMessage(
+                        `All ${skipped} files are up to date. No indexing needed.`
+                    );
+                    return;
+                }
+
+                progress.report({
+                    message: `Indexing ${filesToParse.length} files...`,
+                });
+
+                // Use batch parsing for better cross-file edge resolution
+                const result = await workerManager!.parseBatch(filesToParse);
+
                 vscode.window.showInformationMessage(
-                    `Indexed ${indexed} files with ${totalSymbols} symbols`
+                    `Indexed ${result.filesProcessed} files with ${result.totalSymbols} symbols and ${result.totalEdges} edges` +
+                    (skipped > 0 ? ` (${skipped} unchanged files skipped)` : '')
                 );
 
-                outputChannel.appendLine(`Indexing complete: ${indexed} files, ${totalSymbols} symbols`);
+                outputChannel.appendLine(
+                    `Indexing complete: ${result.filesProcessed} files, ${result.totalSymbols} symbols, ${result.totalEdges} edges`
+                );
             } catch (error) {
                 vscode.window.showErrorMessage(`Indexing failed: ${error}`);
                 outputChannel.appendLine(`Indexing failed: ${error}`);
@@ -216,6 +270,63 @@ async function clearIndex() {
             vscode.window.showErrorMessage(`Failed to clear index: ${error}`);
             outputChannel.appendLine(`Failed to clear index: ${error}`);
         }
+    }
+}
+
+/**
+ * Export graph command
+ */
+async function exportGraph() {
+    if (!workerManager) {
+        vscode.window.showErrorMessage('Worker not initialized');
+        return;
+    }
+
+    try {
+        const graph = await workerManager.exportGraph();
+
+        // Create output file path
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const outputPath = workspaceFolder
+            ? path.join(workspaceFolder.uri.fsPath, 'code-graph.json')
+            : path.join(require('os').tmpdir(), 'code-graph.json');
+
+        // Write graph to file
+        fs.writeFileSync(outputPath, JSON.stringify(graph, null, 2), 'utf-8');
+
+        // Show success and open file
+        const result = await vscode.window.showInformationMessage(
+            `Graph exported to ${outputPath}`,
+            'Open File'
+        );
+
+        if (result === 'Open File') {
+            const doc = await vscode.workspace.openTextDocument(outputPath);
+            await vscode.window.showTextDocument(doc);
+        }
+
+        outputChannel.appendLine(`Graph exported: ${graph.symbols.length} symbols, ${graph.edges.length} edges`);
+    } catch (error) {
+        vscode.window.showErrorMessage(`Export failed: ${error}`);
+        outputChannel.appendLine(`Export failed: ${error}`);
+    }
+}
+
+/**
+ * Toggle file watcher command
+ */
+async function toggleFileWatcher() {
+    if (!fileWatcherManager) {
+        vscode.window.showErrorMessage('File watcher not initialized');
+        return;
+    }
+
+    if (fileWatcherManager.isActive()) {
+        fileWatcherManager.stop();
+        vscode.window.showInformationMessage('File watcher stopped');
+    } else {
+        fileWatcherManager.start();
+        vscode.window.showInformationMessage('File watcher started');
     }
 }
 

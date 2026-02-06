@@ -2,6 +2,8 @@
 // Ensures strict contracts between extension host and worker thread
 // Prevents malformed requests and simplifies debugging
 
+import { GraphExport } from '../db/database';
+
 /**
  * Messages sent from extension host to worker
  */
@@ -14,6 +16,11 @@ export type WorkerRequest =
         language: 'typescript' | 'python' | 'c';
     }
     | {
+        type: 'parse-batch';
+        id: string;
+        files: { filePath: string; content: string; language: 'typescript' | 'python' | 'c' }[];
+    }
+    | {
         type: 'query-symbols';
         id: string;
         query: string;
@@ -22,6 +29,16 @@ export type WorkerRequest =
         type: 'query-file';
         id: string;
         filePath: string;
+    }
+    | {
+        type: 'check-file-hash';
+        id: string;
+        filePath: string;
+        content: string;
+    }
+    | {
+        type: 'export-graph';
+        id: string;
     }
     | {
         type: 'clear';
@@ -47,9 +64,28 @@ export type WorkerResponse =
         edgeCount: number;
     }
     | {
+        type: 'parse-batch-complete';
+        id: string;
+        totalSymbols: number;
+        totalEdges: number;
+        filesProcessed: number;
+    }
+    | {
         type: 'query-result';
         id: string;
         symbols: SymbolResult[];
+    }
+    | {
+        type: 'file-hash-result';
+        id: string;
+        needsReindex: boolean;
+        storedHash: string | null;
+        currentHash: string;
+    }
+    | {
+        type: 'graph-export';
+        id: string;
+        graph: GraphExport;
     }
     | {
         type: 'stats-result';

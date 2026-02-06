@@ -2,6 +2,7 @@
 // This schema represents the codebase as a graph:
 // - symbols = nodes (functions, classes, variables)
 // - edges = relationships (imports, calls, inheritance)
+// - files = file tracking for incremental indexing
 // - meta = indexing state and cache metadata
 
 import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
@@ -40,6 +41,18 @@ export const edges = sqliteTable('edges', {
 });
 
 /**
+ * Files Table
+ * Tracks files for incremental indexing
+ * Only re-index files when content hash changes
+ */
+export const files = sqliteTable('files', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    filePath: text('file_path').notNull().unique(),
+    contentHash: text('content_hash').notNull(),
+    lastIndexedAt: text('last_indexed_at').notNull(),
+});
+
+/**
  * Meta Table
  * Stores project metadata and indexing state
  * (file hashes, last index time, etc.)
@@ -54,5 +67,7 @@ export type Symbol = typeof symbols.$inferSelect;
 export type NewSymbol = typeof symbols.$inferInsert;
 export type Edge = typeof edges.$inferSelect;
 export type NewEdge = typeof edges.$inferInsert;
+export type File = typeof files.$inferSelect;
+export type NewFile = typeof files.$inferInsert;
 export type Meta = typeof meta.$inferSelect;
 export type NewMeta = typeof meta.$inferInsert;

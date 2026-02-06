@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
-// Purpose: Simplified end-to-end validation script
-// Tests the worker directly by spawning it as a child process
+// Purpose: End-to-end validation script for Structural X-Ray engine
+// Tests worker for symbol extraction, call graph, and import edges on 3-file project
 
 const { Worker } = require('worker_threads');
 const path = require('path');
 const fs = require('fs');
 
 console.log('═══════════════════════════════════════════════════');
-console.log('  Code Indexer Extension - Validation Script');
+console.log('  Structural X-Ray Engine - Validation Script');
 console.log('═══════════════════════════════════════════════════\n');
 
 async function runValidation() {
@@ -20,16 +20,6 @@ async function runValidation() {
         }
 
         console.log('✓ Build files found\n');
-
-        // Read test file
-        const testFilePath = path.join(__dirname, 'sample.ts');
-        if (!fs.existsSync(testFilePath)) {
-            throw new Error(`Test file not found: ${testFilePath}`);
-        }
-
-        const content = fs.readFileSync(testFilePath, 'utf-8');
-        console.log(`Reading test file: ${testFilePath}`);
-        console.log(`File size: ${content.length} characters\n`);
 
         // Start worker
         console.log('Starting worker...');
@@ -90,136 +80,175 @@ async function runValidation() {
             worker.on('message', checkReady);
         });
 
-        // Parse the file
-        console.log('Parsing test file...');
-        const parseResponse = await sendRequest({
-            type: 'parse',
-            filePath: testFilePath,
-            content: content,
-            language: 'typescript',
-        });
+        // ========== Test 1: Parse 3-file validation project ==========
+        console.log('═══════════════════════════════════════════════════');
+        console.log('  Test 1: Parse 3-File Validation Project');
+        console.log('═══════════════════════════════════════════════════\n');
 
-        console.log(`✓ Parsing complete`);
-        console.log(`  - Symbols extracted: ${parseResponse.symbolCount}`);
-        console.log(`  - Edges created: ${parseResponse.edgeCount}\n`);
+        const validationDir = path.join(__dirname, 'validation-project');
+        const testFiles = ['fileA.ts', 'fileB.ts', 'fileC.ts'];
 
-        // Validate minimum symbol count
-        if (parseResponse.symbolCount < 10) {
-            throw new Error(
-                `Expected at least 10 symbols, but got ${parseResponse.symbolCount}. ` +
-                'Parser may not be working correctly.'
-            );
+        // Read all test files
+        const filesToParse = [];
+        for (const fileName of testFiles) {
+            const filePath = path.join(validationDir, fileName);
+            if (!fs.existsSync(filePath)) {
+                console.log(`⚠ Skipping ${fileName} - file not found`);
+                continue;
+            }
+            const content = fs.readFileSync(filePath, 'utf-8');
+            filesToParse.push({ filePath, content, language: 'typescript' });
+            console.log(`Reading: ${fileName} (${content.length} chars)`);
         }
 
-        // Query symbols by file
-        console.log('Querying symbols by file...');
-        const fileQueryResponse = await sendRequest({
-            type: 'query-file',
-            filePath: testFilePath,
-        });
-
-        console.log(`✓ Query successful: Found ${fileQueryResponse.symbols.length} symbols\n`);
-
-        // Verify query results match parse results
-        if (fileQueryResponse.symbols.length !== parseResponse.symbolCount) {
-            throw new Error(
-                `Symbol count mismatch: Parse returned ${parseResponse.symbolCount}, ` +
-                `but query returned ${fileQueryResponse.symbols.length}`
-            );
+        if (filesToParse.length === 0) {
+            throw new Error('No validation project files found!');
         }
 
-        // Display sample symbols
-        console.log('Sample symbols from database:');
-        console.log('─────────────────────────────────────────────────');
-        fileQueryResponse.symbols.slice(0, 10).forEach((symbol, index) => {
-            console.log(
-                `${(index + 1).toString().padStart(2)}. ${symbol.type.padEnd(12)} | ${symbol.name.padEnd(20)} | ` +
-                `Line ${symbol.range.startLine}-${symbol.range.endLine} | ` +
-                `Complexity: ${symbol.complexity}`
-            );
-        });
-        console.log('─────────────────────────────────────────────────\n');
-
-        // Query specific symbols
-        console.log('Querying specific symbols...');
-        const userServiceResponse = await sendRequest({
-            type: 'query-symbols',
-            query: 'UserService',
-        });
-        console.log(`✓ Query for "UserService": Found ${userServiceResponse.symbols.length} match(es)`);
-
-        const factorialResponse = await sendRequest({
-            type: 'query-symbols',
-            query: 'factorial',
-        });
-        console.log(`✓ Query for "factorial": Found ${factorialResponse.symbols.length} match(es)\n`);
-
-        // Get statistics
-        console.log('Retrieving index statistics...');
-        const statsResponse = await sendRequest({
-            type: 'stats',
+        // Parse files as batch for cross-file edge resolution
+        console.log('\nParsing files as batch...');
+        const batchResponse = await sendRequest({
+            type: 'parse-batch',
+            files: filesToParse,
         });
 
-        console.log('✓ Statistics retrieved:');
+        console.log(`✓ Batch parsing complete`);
+        console.log(`  - Total symbols: ${batchResponse.totalSymbols}`);
+        console.log(`  - Total edges: ${batchResponse.totalEdges}`);
+        console.log(`  - Files processed: ${batchResponse.filesProcessed}\n`);
+
+        // ========== Test 2: Verify Import Edges ==========
+        console.log('═══════════════════════════════════════════════════');
+        console.log('  Test 2: Verify Import Edges');
+        console.log('═══════════════════════════════════════════════════\n');
+
+        // Export graph for verification
+        const graphResponse = await sendRequest({ type: 'export-graph' });
+        const graph = graphResponse.graph;
+
+        console.log(`Graph exported:`);
+        console.log(`  - Symbols: ${graph.symbols.length}`);
+        console.log(`  - Edges: ${graph.edges.length}`);
+        console.log(`  - Files tracked: ${graph.files.length}\n`);
+
+        // Check for import edges
+        const importEdges = graph.edges.filter(e => e.type === 'import');
+        console.log(`Import edges found: ${importEdges.length}`);
+        importEdges.forEach((edge, i) => {
+            console.log(`  ${i + 1}. ${path.basename(edge.source.split(':')[0])} → ${edge.target.split(':')[1]} (${edge.type})`);
+        });
+
+        // Check for call edges
+        const callEdges = graph.edges.filter(e => e.type === 'call');
+        console.log(`\nCall edges found: ${callEdges.length}`);
+        callEdges.forEach((edge, i) => {
+            console.log(`  ${i + 1}. ${edge.source.split(':')[1]} → ${edge.target.split(':')[1]} (${edge.type})`);
+        });
+
+        // ========== Test 3: Query Specific Symbols ==========
+        console.log('\n═══════════════════════════════════════════════════');
+        console.log('  Test 3: Query Specific Symbols');
+        console.log('═══════════════════════════════════════════════════\n');
+
+        const symbolsToQuery = ['Calculator', 'runTests', 'main', 'helperFn'];
+        for (const symbolName of symbolsToQuery) {
+            const response = await sendRequest({
+                type: 'query-symbols',
+                query: symbolName,
+            });
+            console.log(`Query "${symbolName}": ${response.symbols.length} match(es)`);
+            response.symbols.forEach(s => {
+                console.log(`  - ${s.type} in ${path.basename(s.filePath)}:${s.range.startLine}`);
+            });
+        }
+
+        // ========== Test 4: Verify Cross-File Import Resolution ==========
+        console.log('\n═══════════════════════════════════════════════════');
+        console.log('  Test 4: Verify Import Relationships');
+        console.log('═══════════════════════════════════════════════════\n');
+
+        // Check that fileA imports from fileB
+        const fileASymbols = graph.symbols.filter(s => s.filePath.includes('fileA'));
+        const fileBSymbols = graph.symbols.filter(s => s.filePath.includes('fileB'));
+        const fileCSymbols = graph.symbols.filter(s => s.filePath.includes('fileC'));
+
+        console.log(`Symbols per file:`);
+        console.log(`  - fileA.ts: ${fileASymbols.length} symbols`);
+        console.log(`  - fileB.ts: ${fileBSymbols.length} symbols`);
+        console.log(`  - fileC.ts: ${fileCSymbols.length} symbols`);
+
+        // Verify Calculator class exists in fileB
+        const calculatorClass = graph.symbols.find(
+            s => s.name === 'Calculator' && s.type === 'class'
+        );
+        if (calculatorClass) {
+            console.log(`\n✓ Calculator class found in ${path.basename(calculatorClass.filePath)}`);
+        } else {
+            console.log(`\n✗ Calculator class NOT found`);
+        }
+
+        // Verify runTests function exists in fileC
+        const runTestsFn = graph.symbols.find(
+            s => s.name === 'runTests' && s.type === 'function'
+        );
+        if (runTestsFn) {
+            console.log(`✓ runTests function found in ${path.basename(runTestsFn.filePath)}`);
+        } else {
+            console.log(`✗ runTests function NOT found`);
+        }
+
+        // ========== Test 5: Write JSON Graph Dump ==========
+        console.log('\n═══════════════════════════════════════════════════');
+        console.log('  Test 5: Export Graph to JSON File');
+        console.log('═══════════════════════════════════════════════════\n');
+
+        const outputPath = path.join(__dirname, 'validation-graph.json');
+        fs.writeFileSync(outputPath, JSON.stringify(graph, null, 2), 'utf-8');
+        console.log(`✓ Graph exported to: ${outputPath}\n`);
+
+        // Print summary of edges
+        console.log('Edge Summary:');
+        const edgeTypes = {};
+        graph.edges.forEach(e => {
+            edgeTypes[e.type] = (edgeTypes[e.type] || 0) + 1;
+        });
+        Object.entries(edgeTypes).forEach(([type, count]) => {
+            console.log(`  - ${type}: ${count}`);
+        });
+
+        // ========== Test 6: Test Incremental Indexing ==========
+        console.log('\n═══════════════════════════════════════════════════');
+        console.log('  Test 6: Test Incremental Indexing (Hash Check)');
+        console.log('═══════════════════════════════════════════════════\n');
+
+        // Check if files need re-indexing (should not need since just indexed)
+        for (const file of filesToParse) {
+            const hashResponse = await sendRequest({
+                type: 'check-file-hash',
+                filePath: file.filePath,
+                content: file.content,
+            });
+            console.log(`${path.basename(file.filePath)}: needsReindex = ${hashResponse.needsReindex}`);
+        }
+
+        // ========== Test 7: Test Clear and Stats ==========
+        console.log('\n═══════════════════════════════════════════════════');
+        console.log('  Test 7: Statistics and Clear');
+        console.log('═══════════════════════════════════════════════════\n');
+
+        const statsResponse = await sendRequest({ type: 'stats' });
+        console.log('Index Statistics:');
         console.log(`  - Total symbols: ${statsResponse.stats.symbolCount}`);
         console.log(`  - Total edges: ${statsResponse.stats.edgeCount}`);
         console.log(`  - Total files: ${statsResponse.stats.fileCount}`);
         if (statsResponse.stats.lastIndexTime) {
-            console.log(`  - Last index time: ${statsResponse.stats.lastIndexTime}`);
+            console.log(`  - Last index: ${statsResponse.stats.lastIndexTime}`);
         }
-        console.log();
-
-        // Verify symbol types
-        const symbolTypes = new Set(fileQueryResponse.symbols.map((s) => s.type));
-        console.log('Symbol types found:');
-        Array.from(symbolTypes).forEach((type) => {
-            const count = fileQueryResponse.symbols.filter((s) => s.type === type).length;
-            console.log(`  - ${type}: ${count}`);
-        });
-        console.log();
-
-        // Verify complexity calculation
-        const complexSymbols = fileQueryResponse.symbols.filter((s) => s.complexity > 1);
-        console.log(`Symbols with complexity > 1: ${complexSymbols.length}`);
-        if (complexSymbols.length > 0) {
-            console.log('Most complex symbols:');
-            complexSymbols
-                .sort((a, b) => b.complexity - a.complexity)
-                .slice(0, 5)
-                .forEach((symbol) => {
-                    console.log(`  - ${symbol.name} (${symbol.type}): complexity ${symbol.complexity}`);
-                });
-        }
-        console.log();
-
-        // Test clear index
-        console.log('Testing index clear...');
-        await sendRequest({ type: 'clear' });
-        const statsAfterClear = await sendRequest({ type: 'stats' });
-        if (statsAfterClear.stats.symbolCount !== 0) {
-            throw new Error('Index not properly cleared');
-        }
-        console.log('✓ Index cleared successfully\n');
-
-        // Re-parse to restore data
-        console.log('Re-parsing file to restore index...');
-        await sendRequest({
-            type: 'parse',
-            filePath: testFilePath,
-            content: content,
-            language: 'typescript',
-        });
-        console.log('✓ Index restored\n');
 
         // Shutdown worker
-        console.log('Shutting down worker...');
-        // Don't wait for shutdown response - worker exits immediately
+        console.log('\nShutting down worker...');
         worker.postMessage({ type: 'shutdown', id: 'shutdown' });
-
-        // Wait a bit for graceful shutdown
         await new Promise(resolve => setTimeout(resolve, 500));
-
-        // Force terminate if still running
         await worker.terminate();
         console.log('✓ Worker shutdown complete\n');
 

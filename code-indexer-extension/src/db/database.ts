@@ -1,13 +1,41 @@
 // Purpose: Database operations layer
-// Provides type-safe CRUD operations for symbols, edges, and metadata
+// Provides type-safe CRUD operations for symbols, edges, files, and metadata
 // ALL database access happens in the worker thread only
 
 import Database from 'better-sqlite3';
 import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { eq, and } from 'drizzle-orm';
-import { symbols, edges, meta, NewSymbol, NewEdge, Symbol, Edge } from './schema';
+import { eq, like } from 'drizzle-orm';
+import { symbols, edges, files, meta, NewSymbol, NewEdge, Symbol, Edge, File } from './schema';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
+
+export interface GraphExport {
+    symbols: {
+        id: number;
+        name: string;
+        type: string;
+        filePath: string;
+        range: {
+            startLine: number;
+            startColumn: number;
+            endLine: number;
+            endColumn: number;
+        };
+        complexity: number;
+    }[];
+    edges: {
+        id: number;
+        source: string;
+        target: string;
+        type: string;
+    }[];
+    files: {
+        filePath: string;
+        contentHash: string;
+        lastIndexedAt: string;
+    }[];
+}
 
 export class CodeIndexDatabase {
     private db: Database.Database;
@@ -62,6 +90,15 @@ export class CodeIndexDatabase {
       CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
       CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type);
 
+      CREATE TABLE IF NOT EXISTS files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path TEXT NOT NULL UNIQUE,
+        content_hash TEXT NOT NULL,
+        last_indexed_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_files_path ON files(file_path);
+
       CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -113,7 +150,10 @@ export class CodeIndexDatabase {
 
         const transaction = this.db.transaction((items: NewEdge[]) => {
             for (const item of items) {
-                insertStmt.run(item.sourceId, item.targetId, item.type);
+                // Only insert if both source and target are valid
+                if (item.sourceId && item.targetId) {
+                    insertStmt.run(item.sourceId, item.targetId, item.type);
+                }
             }
         });
 
@@ -140,6 +180,27 @@ export class CodeIndexDatabase {
             .from(symbols)
             .where(eq(symbols.name, name))
             .all();
+    }
+
+    /**
+     * Get all symbols
+     */
+    getAllSymbols(): Symbol[] {
+        return this.drizzle.select().from(symbols).all();
+    }
+
+    /**
+     * Get all edges
+     */
+    getAllEdges(): Edge[] {
+        return this.drizzle.select().from(edges).all();
+    }
+
+    /**
+     * Get all files
+     */
+    getAllFiles(): File[] {
+        return this.drizzle.select().from(files).all();
     }
 
     /**
@@ -178,6 +239,7 @@ export class CodeIndexDatabase {
         this.db.exec(`
       DELETE FROM edges;
       DELETE FROM symbols;
+      DELETE FROM files;
       DELETE FROM meta;
     `);
     }
@@ -201,6 +263,102 @@ export class CodeIndexDatabase {
         return result?.value ?? null;
     }
 
+    // ========== File Tracking for Incremental Indexing ==========
+
+    /**
+     * Get file hash from database
+     */
+    getFileHash(filePath: string): string | null {
+        const result = this.db
+            .prepare('SELECT content_hash FROM files WHERE file_path = ?')
+            .get(filePath) as { content_hash: string } | undefined;
+        return result?.content_hash ?? null;
+    }
+
+    /**
+     * Set file hash after indexing
+     */
+    setFileHash(filePath: string, contentHash: string): void {
+        const now = new Date().toISOString();
+        this.db
+            .prepare(`
+        INSERT OR REPLACE INTO files (file_path, content_hash, last_indexed_at)
+        VALUES (?, ?, ?)
+      `)
+            .run(filePath, contentHash, now);
+    }
+
+    /**
+     * Compute content hash using SHA-256
+     */
+    static computeHash(content: string): string {
+        return crypto.createHash('sha256').update(content).digest('hex');
+    }
+
+    /**
+     * Check if file needs re-indexing
+     * Returns true if file is new or content has changed
+     */
+    needsReindex(filePath: string, content: string): boolean {
+        const storedHash = this.getFileHash(filePath);
+        if (!storedHash) return true;
+
+        const currentHash = CodeIndexDatabase.computeHash(content);
+        return storedHash !== currentHash;
+    }
+
+    // ========== Graph Export ==========
+
+    /**
+     * Export entire graph as JSON
+     */
+    exportGraph(): GraphExport {
+        const allSymbols = this.getAllSymbols();
+        const allEdges = this.getAllEdges();
+        const allFiles = this.getAllFiles();
+
+        // Build symbol ID to name map for edge export
+        const symbolMap = new Map<number, Symbol>();
+        for (const sym of allSymbols) {
+            symbolMap.set(sym.id, sym);
+        }
+
+        return {
+            symbols: allSymbols.map((s) => ({
+                id: s.id,
+                name: s.name,
+                type: s.type,
+                filePath: s.filePath,
+                range: {
+                    startLine: s.rangeStartLine,
+                    startColumn: s.rangeStartColumn,
+                    endLine: s.rangeEndLine,
+                    endColumn: s.rangeEndColumn,
+                },
+                complexity: s.complexity,
+            })),
+            edges: allEdges.map((e) => {
+                const sourceSymbol = symbolMap.get(e.sourceId);
+                const targetSymbol = symbolMap.get(e.targetId);
+                return {
+                    id: e.id,
+                    source: sourceSymbol
+                        ? `${sourceSymbol.filePath}:${sourceSymbol.name}:${sourceSymbol.rangeStartLine}`
+                        : `unknown:${e.sourceId}`,
+                    target: targetSymbol
+                        ? `${targetSymbol.filePath}:${targetSymbol.name}:${targetSymbol.rangeStartLine}`
+                        : `unknown:${e.targetId}`,
+                    type: e.type,
+                };
+            }),
+            files: allFiles.map((f) => ({
+                filePath: f.filePath,
+                contentHash: f.contentHash,
+                lastIndexedAt: f.lastIndexedAt,
+            })),
+        };
+    }
+
     /**
      * Get statistics about the index
      */
@@ -214,7 +372,7 @@ export class CodeIndexDatabase {
             .get() as { count: number };
 
         const fileCount = this.db
-            .prepare('SELECT COUNT(DISTINCT file_path) as count FROM symbols')
+            .prepare('SELECT COUNT(*) as count FROM files')
             .get() as { count: number };
 
         return {

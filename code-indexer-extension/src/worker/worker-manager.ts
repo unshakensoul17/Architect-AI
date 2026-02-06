@@ -3,7 +3,6 @@
 // Prevents runaway workers and resource exhaustion
 
 import { Worker } from 'worker_threads';
-import * as path from 'path';
 import {
     WorkerRequest,
     WorkerResponse,
@@ -11,6 +10,7 @@ import {
     SymbolResult,
     IndexStats,
 } from './message-protocol';
+import { GraphExport } from '../db/database';
 
 interface PendingRequest {
     resolve: (response: WorkerResponse) => void;
@@ -167,6 +167,63 @@ export class WorkerManager {
             symbolCount: response.symbolCount,
             edgeCount: response.edgeCount,
         };
+    }
+
+    /**
+     * Parse multiple files in batch for better cross-file edge resolution
+     */
+    async parseBatch(
+        files: { filePath: string; content: string; language: 'typescript' | 'python' | 'c' }[]
+    ): Promise<{ totalSymbols: number; totalEdges: number; filesProcessed: number }> {
+        const response = await this.sendRequest({
+            type: 'parse-batch',
+            id: this.generateId(),
+            files,
+        });
+
+        if (response.type !== 'parse-batch-complete') {
+            throw new Error('Unexpected response type');
+        }
+
+        return {
+            totalSymbols: response.totalSymbols,
+            totalEdges: response.totalEdges,
+            filesProcessed: response.filesProcessed,
+        };
+    }
+
+    /**
+     * Check if file needs re-indexing based on content hash
+     */
+    async checkFileHash(filePath: string, content: string): Promise<boolean> {
+        const response = await this.sendRequest({
+            type: 'check-file-hash',
+            id: this.generateId(),
+            filePath,
+            content,
+        });
+
+        if (response.type !== 'file-hash-result') {
+            throw new Error('Unexpected response type');
+        }
+
+        return response.needsReindex;
+    }
+
+    /**
+     * Export entire graph as JSON
+     */
+    async exportGraph(): Promise<GraphExport> {
+        const response = await this.sendRequest({
+            type: 'export-graph',
+            id: this.generateId(),
+        });
+
+        if (response.type !== 'graph-export') {
+            throw new Error('Unexpected response type');
+        }
+
+        return response.graph;
     }
 
     /**
