@@ -145,7 +145,12 @@ export function createGroqClient(config?: GroqClientConfig): GroqClient | null {
     try {
         return new GroqClient(config);
     } catch (error) {
-        console.warn('[Groq] Client initialization failed:', (error as Error).message);
+        const msg = (error as Error).message;
+        if (msg.includes('GROQ_API_KEY is required')) {
+            console.log('[Groq] Client not initialized (API key missing). Waiting for configuration.');
+        } else {
+            console.warn('[Groq] Client initialization failed:', msg);
+        }
         return null;
     }
 }

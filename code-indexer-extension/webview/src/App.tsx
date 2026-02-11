@@ -1,6 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { ReactFlowProvider } from '@xyflow/react';
 import GraphCanvas from './components/GraphCanvas';
+import { InspectorPanel } from './components/inspector';
+import { useInspectorStore } from './stores/useInspectorStore';
 import type { GraphData, VSCodeAPI, ExtensionMessage, WebviewMessage } from './types';
+import type { NodeType } from './types/inspector';
 import { PerformanceMonitor } from './utils/performance';
 
 // Get VS Code API
@@ -10,6 +14,13 @@ function App() {
     const [graphData, setGraphData] = useState<GraphData | null>(null);
     const [fps, setFps] = useState<number>(60);
     const [loading, setLoading] = useState(true);
+    const [showInspector, setShowInspector] = useState(true);
+
+    // Get stable action references from store
+    const selectNode = useInspectorStore((s) => s.selectNode);
+
+    // Ref to track last clicked node to prevent duplicate updates
+    const lastClickedNodeRef = useRef<string | null>(null);
 
     // Performance monitoring
     useEffect(() => {
@@ -26,8 +37,11 @@ function App() {
 
             switch (message.type) {
                 case 'graph-data':
-                    setGraphData(message.data);
-                    setLoading(false);
+                    if (message.data) {
+                        setGraphData(message.data);
+                        (window as any).graphData = message.data;
+                        setLoading(false);
+                    }
                     break;
 
                 case 'theme-changed':
@@ -50,13 +64,44 @@ function App() {
         };
     }, []);
 
-    const handleNodeClick = useCallback((nodeId: string) => {
-        const message: WebviewMessage = {
-            type: 'node-selected',
-            nodeId,
-        };
-        vscode.postMessage(message);
+    // Determine node type from node ID pattern
+    const getNodeType = useCallback((nodeId: string): NodeType => {
+        if (nodeId.startsWith('domain:')) {
+            return 'domain';
+        }
+        // File nodes have format: domain:filePath (no symbol/line at end)
+        // Symbol nodes have format: filePath:symbolName:line
+        const parts = nodeId.split(':');
+        if (parts.length >= 3 && /^\d+$/.test(parts[parts.length - 1])) {
+            return 'symbol';
+        }
+        return 'file';
     }, []);
+
+    const handleNodeClick = useCallback(
+        (nodeId: string) => {
+            // Prevent duplicate updates for same node
+            if (lastClickedNodeRef.current === nodeId) {
+                return;
+            }
+            lastClickedNodeRef.current = nodeId;
+
+            // Determine node type and update inspector store
+            const nodeType = getNodeType(nodeId);
+            selectNode(nodeId, nodeType);
+
+            // Show inspector panel if hidden
+            setShowInspector(true);
+
+            // Notify extension
+            const message: WebviewMessage = {
+                type: 'node-selected',
+                nodeId,
+            };
+            vscode.postMessage(message);
+        },
+        [selectNode, getNodeType]
+    );
 
     const handleExport = useCallback((format: 'png' | 'svg') => {
         const message: WebviewMessage = {
@@ -70,6 +115,27 @@ function App() {
         setLoading(true);
         const message: WebviewMessage = { type: 'request-graph' };
         vscode.postMessage(message);
+    }, []);
+
+    const handleCloseInspector = useCallback(() => {
+        setShowInspector(false);
+    }, []);
+
+    const handleFocusNode = useCallback(
+        (nodeId: string) => {
+            // Update inspector selection
+            const nodeType = getNodeType(nodeId);
+            selectNode(nodeId, nodeType);
+
+            // Also trigger a click to focus the graph
+            // The GraphCanvas should handle the actual focusing
+            handleNodeClick(nodeId);
+        },
+        [getNodeType, selectNode, handleNodeClick]
+    );
+
+    const handleToggleInspector = useCallback(() => {
+        setShowInspector((prev) => !prev);
     }, []);
 
     return (
@@ -86,7 +152,8 @@ function App() {
                     <h1 className="text-lg font-bold">Code Graph Visualization</h1>
                     {graphData && (
                         <div className="text-xs opacity-70">
-                            {graphData.symbols.length} symbols · {graphData.edges.length} edges
+                            {graphData.domains.length} domains · {graphData.symbols.length} symbols ·{' '}
+                            {graphData.edges.length} edges
                         </div>
                     )}
                 </div>
@@ -109,6 +176,23 @@ function App() {
                         {fps} FPS
                     </div>
 
+                    {/* Inspector Toggle */}
+                    <button
+                        onClick={handleToggleInspector}
+                        className="px-3 py-1 text-xs rounded hover:bg-opacity-80"
+                        style={{
+                            backgroundColor: showInspector
+                                ? 'var(--vscode-button-background)'
+                                : 'var(--vscode-button-secondaryBackground)',
+                            color: showInspector
+                                ? 'var(--vscode-button-foreground)'
+                                : 'var(--vscode-button-secondaryForeground)',
+                        }}
+                        title={showInspector ? 'Hide Inspector' : 'Show Inspector'}
+                    >
+                        📋
+                    </button>
+
                     {/* Refresh Button */}
                     <button
                         onClick={handleRefresh}
@@ -122,7 +206,7 @@ function App() {
                         {loading ? 'Loading...' : 'Refresh'}
                     </button>
 
-                    {/* Export Buttons */}
+                    {/* Export Button */}
                     <button
                         onClick={() => handleExport('png')}
                         className="px-3 py-1 text-xs rounded hover:bg-opacity-80"
@@ -137,53 +221,37 @@ function App() {
                 </div>
             </div>
 
-            {/* Legend */}
-            {graphData && (
-                <div
-                    className="flex items-center gap-4 px-4 py-2 text-xs border-b"
-                    style={{
-                        backgroundColor: 'var(--vscode-sideBar-background)',
-                        borderColor: 'var(--vscode-panel-border)',
-                    }}
-                >
-                    <div className="font-semibold">Coupling Heatmap:</div>
-                    <div className="flex items-center gap-2">
-                        <div
-                            className="w-4 h-4 rounded"
-                            style={{ backgroundColor: '#3b82f6' }}
-                        />
-                        <span>Low</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <div
-                            className="w-4 h-4 rounded"
-                            style={{ backgroundColor: '#fbbf24' }}
-                        />
-                        <span>Medium</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <div
-                            className="w-4 h-4 rounded"
-                            style={{ backgroundColor: '#ef4444' }}
-                        />
-                        <span>High</span>
-                    </div>
-                </div>
-            )}
-
-            {/* Graph Canvas */}
-            <div className="flex-1">
-                {loading ? (
-                    <div className="flex items-center justify-center w-full h-full">
-                        <div className="text-center">
-                            <div className="text-lg font-semibold mb-2">Loading Graph...</div>
-                            <div className="text-sm opacity-70">
-                                Calculating coupling metrics and layout
+            {/* Main Content Area */}
+            <div className="flex-1 flex overflow-hidden">
+                {/* Graph Canvas */}
+                <div className="flex-1 overflow-hidden">
+                    {loading ? (
+                        <div className="flex items-center justify-center w-full h-full">
+                            <div className="text-center">
+                                <div className="text-lg font-semibold mb-2">Loading Graph...</div>
+                                <div className="text-sm opacity-70">
+                                    Calculating coupling metrics and layout
+                                </div>
                             </div>
                         </div>
-                    </div>
-                ) : (
-                    <GraphCanvas graphData={graphData} onNodeClick={handleNodeClick} />
+                    ) : (
+                        <ReactFlowProvider>
+                            <GraphCanvas
+                                graphData={graphData}
+                                vscode={vscode}
+                                onNodeClick={handleNodeClick}
+                            />
+                        </ReactFlowProvider>
+                    )}
+                </div>
+
+                {/* Inspector Panel */}
+                {showInspector && (
+                    <InspectorPanel
+                        vscode={vscode}
+                        onClose={handleCloseInspector}
+                        onFocusNode={handleFocusNode}
+                    />
                 )}
             </div>
         </div>

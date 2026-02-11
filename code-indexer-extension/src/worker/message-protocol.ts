@@ -84,6 +84,42 @@ export type WorkerRequest =
         type: 'get-context';
         id: string;
         symbolId: number;
+    }
+    // Inspector Panel message types
+    | {
+        type: 'inspector-overview';
+        id: string;
+        requestId: string;
+        nodeId: string;
+        nodeType: 'domain' | 'file' | 'symbol';
+    }
+    | {
+        type: 'inspector-dependencies';
+        id: string;
+        requestId: string;
+        nodeId: string;
+        nodeType: 'domain' | 'file' | 'symbol';
+    }
+    | {
+        type: 'inspector-risks';
+        id: string;
+        requestId: string;
+        nodeId: string;
+        nodeType: 'domain' | 'file' | 'symbol';
+    }
+    | {
+        type: 'inspector-ai-action';
+        id: string;
+        requestId: string;
+        nodeId: string;
+        action: 'explain' | 'audit' | 'refactor' | 'dependencies' | 'optimize';
+    }
+    | {
+        type: 'inspector-ai-why';
+        id: string;
+        requestId: string;
+        nodeId: string;
+        metric: string;
     };
 
 /**
@@ -178,6 +214,38 @@ export type WorkerResponse =
         neighbors: SymbolResult[];
         incomingEdgeCount: number;
         outgoingEdgeCount: number;
+    }
+    // Inspector Panel response types
+    | {
+        type: 'inspector-overview-result';
+        id: string;
+        requestId: string;
+        data: InspectorOverviewData;
+    }
+    | {
+        type: 'inspector-dependencies-result';
+        id: string;
+        requestId: string;
+        data: InspectorDependencyData;
+    }
+    | {
+        type: 'inspector-risks-result';
+        id: string;
+        requestId: string;
+        data: InspectorRiskData;
+    }
+    | {
+        type: 'inspector-ai-result';
+        id: string;
+        requestId: string;
+        data: InspectorAIResult;
+    }
+    | {
+        type: 'inspector-ai-why-result';
+        id: string;
+        requestId: string;
+        content: string;
+        model: string;
     };
 
 /**
@@ -205,6 +273,65 @@ export interface IndexStats {
     edgeCount: number;
     fileCount: number;
     lastIndexTime?: string;
+}
+
+/**
+ * Inspector Panel data types
+ */
+export interface InspectorOverviewData {
+    nodeType: 'domain' | 'file' | 'symbol';
+    name: string;
+    path: string;
+    lastModified?: string;
+    // Domain metrics
+    healthPercent?: number;
+    fileCount?: number;
+    functionCount?: number;
+    coupling?: number;
+    // File metrics
+    symbolCount?: number;
+    importCount?: number;
+    exportCount?: number;
+    avgComplexity?: number;
+    // Symbol metrics
+    lines?: number;
+    complexity?: number;
+    fanIn?: number;
+    fanOut?: number;
+}
+
+export interface InspectorDependencyItem {
+    id: string;
+    name: string;
+    type: string;
+    filePath: string;
+}
+
+export interface InspectorDependencyData {
+    calls: InspectorDependencyItem[];
+    calledBy: InspectorDependencyItem[];
+    imports: InspectorDependencyItem[];
+    usedBy: InspectorDependencyItem[];
+}
+
+export interface InspectorRiskData {
+    level: 'low' | 'medium' | 'high';
+    heatScore: number;
+    warnings: string[];
+}
+
+export interface InspectorAIResult {
+    action: string;
+    content: string;
+    model: 'groq' | 'vertex';
+    cached: boolean;
+    loading: boolean;
+    error?: string;
+    patch?: {
+        summary: string;
+        impactedNodeCount: number;
+        diff: string;
+    };
 }
 
 /**

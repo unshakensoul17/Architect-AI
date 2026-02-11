@@ -41,20 +41,24 @@
       {
         "command": "codeIndexer.visualizeGraph",
         "title": "Code Indexer: Visualize Code Graph"
-      }
-    ]
-  },
-  "configuration": {
-    "type": "object",
-    "title": "Code Indexer",
-    "properties": {
-      "codeIndexer.vertexProject": {
-        "type": "string",
-        "description": "Google Cloud Project ID for Vertex AI (Gemini 1.5 Pro). Required for strategic analysis."
       },
-      "codeIndexer.groqApiKey": {
-        "type": "string",
-        "description": "Groq API Key (Llama 3.1). Required for reflex/fast analysis."
+      {
+        "command": "codeIndexer.configureAI",
+        "title": "Code Indexer: Configure AI Keys"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Code Indexer",
+      "properties": {
+        "codeIndexer.vertexProject": {
+          "type": "string",
+          "description": "Google Cloud Project ID for Vertex AI (Gemini 1.5 Pro). Required for strategic analysis."
+        },
+        "codeIndexer.groqApiKey": {
+          "type": "string",
+          "description": "Groq API Key (Llama 3.1). Required for reflex/fast analysis."
+        }
       }
     }
   },
@@ -62,9 +66,9 @@
     "vscode:prepublish": "npm run build",
     "build": "npm run build:webview && esbuild src/extension.ts src/worker/worker.ts --bundle --outdir=dist --external:vscode --external:web-tree-sitter --external:better-sqlite3 --format=cjs --platform=node --target=node20 --sourcemap",
     "build:webview": "cd webview && npm install && npm run build",
-    "rebuild": "npx @electron/rebuild -f -w better-sqlite3 -v 39.0.0",
-    "rebuild:electron-32": "npx @electron/rebuild -f -w better-sqlite3 -v 32.0.0",
-    "rebuild:node": "npm rebuild better-sqlite3",
+    "rebuild": "npx @electron/rebuild -f -w better-sqlite3 --build-from-source",
+    "rebuild:electron-39": "npx @electron/rebuild -f -w better-sqlite3 -v 39.5.1 --build-from-source",
+    "rebuild:node": "npm rebuild better-sqlite3 --build-from-source",
     "watch": "npm run build -- --watch",
     "test": "npm run rebuild:node && node test/validate.js",
     "validate": "npm run build && node dist/test/validate.js",

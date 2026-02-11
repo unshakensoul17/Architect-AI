@@ -194,7 +194,12 @@ export function createVertexClient(config?: VertexClientConfig): VertexClient | 
     try {
         return new VertexClient(config);
     } catch (error) {
-        console.warn('[Vertex AI] Client initialization failed:', (error as Error).message);
+        const msg = (error as Error).message;
+        if (msg.includes('GOOGLE_CLOUD_PROJECT is required')) {
+            console.log('[Vertex AI] Client not initialized (Project ID missing). Waiting for configuration.');
+        } else {
+            console.warn('[Vertex AI] Client initialization failed:', msg);
+        }
         return null;
     }
 }

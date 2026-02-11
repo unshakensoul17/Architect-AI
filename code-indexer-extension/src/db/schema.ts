@@ -81,6 +81,7 @@ export interface SymbolContext {
     symbol: Symbol;
     neighbors: Symbol[];
     outgoingEdges: Edge[];
+    incomingEdges: Edge[];
 }
 
 /**

@@ -1,12 +1,15 @@
 import ELK, { type ElkNode } from 'elkjs/lib/elk.bundled.js';
 import type { Node, Edge } from '@xyflow/react';
 
+import type { ViewMode } from '../types/viewMode';
+
 const elk = new ELK();
 
 export interface ElkLayoutOptions {
-    direction?: 'DOWN' | 'RIGHT' | 'UP' | 'LEFT';
+    direction?: 'DOWN' | 'RIGHT' | ' UP' | 'LEFT';
     nodeSpacing?: number;
     layerSpacing?: number;
+    viewMode?: ViewMode;
 }
 
 /**
@@ -148,4 +151,11 @@ export async function applyElkLayout(
     });
 
     return { nodes: layoutedNodes, edges };
+}
+
+/**
+ * Clear layout cache
+ */
+export function clearLayoutCache(): void {
+    // No-op for now since we removed caching
 }

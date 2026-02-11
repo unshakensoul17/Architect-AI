@@ -65,11 +65,15 @@ export interface CouplingMetrics {
 
 // React Flow node data
 export interface FileNodeData extends Record<string, unknown> {
-    label: string;
+    label?: string;
     filePath: string;
     symbolCount: number;
     avgCoupling: number;
     collapsed: boolean;
+    // Progressive visibility states
+    isDimmed?: boolean;
+    isActive?: boolean;
+    isClickable?: boolean;
 }
 
 export interface SymbolNodeData extends Record<string, unknown> {
@@ -79,6 +83,11 @@ export interface SymbolNodeData extends Record<string, unknown> {
     coupling: CouplingMetrics;
     filePath: string;
     line: number;
+    // Progressive visibility states
+    isDimmed?: boolean;
+    isActive?: boolean;
+    isClickable?: boolean;
+    isHighlighted?: boolean;
 }
 
 // Domain health metrics

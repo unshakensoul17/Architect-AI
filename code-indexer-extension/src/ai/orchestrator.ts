@@ -8,6 +8,8 @@ import { VertexClient, createVertexClient } from './vertex-client';
 import { MCPServer, MCPToolCall, MCPToolResponse } from './mcp/server';
 import { CodeIndexDatabase } from '../db/database';
 import { SymbolContext } from '../db/schema';
+import { DomainClassification, DomainType } from '../domain/classifier';
+import { DOMAIN_DESCRIPTIONS } from './mcp/domain-tools';
 import * as fs from 'fs';
 
 /**
@@ -337,6 +339,104 @@ If there's related code context provided, reference it when relevant.`;
      */
     hasVertexClient(): boolean {
         return this.vertexClient !== null;
+    }
+
+    /**
+     * Classify symbol domain using AI
+     * Uses Groq for fast classification or falls back to heuristics
+     */
+    async classifySymbolDomain(
+        symbolName: string,
+        filePath: string,
+        imports: string[]
+    ): Promise<DomainClassification> {
+        // Check if AI clients are available
+        if (!this.groqClient && !this.vertexClient) {
+            console.warn('[Orchestrator] No AI clients available for domain classification');
+            // Return a low-confidence unknown classification to trigger fallback
+            return {
+                domain: DomainType.UNKNOWN,
+                confidence: 0,
+                reason: 'AI unavailable',
+            };
+        }
+
+        try {
+            // Build classification prompt
+            const domainsList = Object.entries(DOMAIN_DESCRIPTIONS)
+                .map(([domain, desc]) => `- ${domain}: ${desc}`)
+                .join('\n');
+
+            const prompt = `Analyze this code symbol and classify it into ONE of these architectural domains:
+
+${domainsList}
+
+Symbol Information:
+- Name: ${symbolName}
+- File Path: ${filePath}
+- Imports: ${imports.length > 0 ? imports.join(', ') : 'none'}
+
+Return ONLY a JSON object with this structure:
+{
+  "domain": "domain_name",
+  "confidence": 0.0-1.0,
+  "reasoning": "brief explanation"
+}
+
+Choose the most appropriate domain based on the symbol's purpose and context.`;
+
+            let responseText = '';
+
+            // Try Groq first (fast)
+            if (this.groqClient) {
+                try {
+                    const systemPrompt = 'You are a code architecture expert. Always respond with valid JSON only.';
+                    const response = await this.groqClient.complete(prompt, systemPrompt);
+                    responseText = response.content;
+                } catch (error) {
+                    console.warn('[Orchestrator] Groq classification failed:', (error as Error).message);
+                }
+            }
+
+            // Fallback to Vertex if Groq failed
+            if (!responseText && this.vertexClient) {
+                try {
+                    const systemPrompt = 'You are a code architecture expert. Always respond with valid JSON only.';
+                    const response = await this.vertexClient.complete(prompt, systemPrompt);
+                    responseText = response.content;
+                } catch (error) {
+                    console.warn('[Orchestrator] Vertex classification failed:', (error as Error).message);
+                }
+            }
+
+            // Parse AI response
+            if (responseText) {
+                // Extract JSON from response (in case there's extra text)
+                const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    const parsed = JSON.parse(jsonMatch[0]);
+                    return {
+                        domain: parsed.domain as DomainType,
+                        confidence: parsed.confidence || 0.8,
+                        reason: parsed.reasoning || 'AI classified',
+                    };
+                }
+            }
+
+            // If AI failed, return low confidence to trigger heuristic fallback
+            return {
+                domain: DomainType.UNKNOWN,
+                confidence: 0,
+                reason: 'AI parsing failed',
+            };
+        } catch (error) {
+            console.error('[Orchestrator] Domain classification error:', error);
+            return {
+                domain: DomainType.UNKNOWN,
+                confidence: 0,
+                reason: `Error: ${(error as Error).message}`,
+            };
+        }
     }
 
     /**

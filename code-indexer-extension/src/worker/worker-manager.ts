@@ -298,6 +298,51 @@ export class WorkerManager {
     }
 
     /**
+     * Send inspector request
+     */
+    async sendInspectorRequest(request: {
+        type: any;
+        id: string;
+        requestId: string;
+        nodeId: string;
+        nodeType?: 'domain' | 'file' | 'symbol';
+        action?: string;
+        metric?: string;
+    }): Promise<{
+        type: string;
+        data?: any;
+        content?: string;
+        model?: string;
+        error?: string;
+    }> {
+        // Forward request as-is, just ensuring ID is set locally if needed
+        // The worker will respond with the corresponding result type
+        const response = await this.sendRequest(request as any);
+
+        // Map worker response to simpler object for webview
+        if (response.type === 'inspector-overview-result') {
+            return { type: response.type, data: response.data };
+        } else if (response.type === 'inspector-dependencies-result') {
+            return { type: response.type, data: response.data };
+        } else if (response.type === 'inspector-risks-result') {
+            return { type: response.type, data: response.data };
+        } else if (response.type === 'inspector-ai-result') {
+            return { type: response.type, data: response.data };
+        } else if (response.type === 'inspector-ai-why-result') {
+            // Handle AI why result
+            return {
+                type: 'inspector-ai-why-result',
+                content: response.content,
+                model: response.model
+            };
+        } else if (response.type === 'error') {
+            return { type: 'error', error: response.error };
+        }
+
+        throw new Error(`Unexpected inspector response: ${response.type}`);
+    }
+
+    /**
      * Configure AI settings
      */
     async configureAI(config: { vertexProject?: string; groqApiKey?: string }): Promise<void> {

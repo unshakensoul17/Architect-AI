@@ -53,6 +53,27 @@ export class GraphWebviewProvider {
                             `Export as ${message.format} - Feature coming soon!`
                         );
                         break;
+
+                    // Inspector Panel message handlers
+                    case 'inspector-overview':
+                    case 'inspector-dependencies':
+                    case 'inspector-risks':
+                    case 'inspector-ai-action':
+                    case 'inspector-ai-why':
+                        await this.handleInspectorMessage(message);
+                        break;
+
+                    case 'preview-refactor':
+                        await this.handlePreviewRefactor(message.diff);
+                        break;
+
+                    case 'apply-refactor':
+                        await this.handleApplyRefactor(message.diff);
+                        break;
+
+                    case 'cancel-refactor':
+                        // Just acknowledge cancellation
+                        break;
                 }
             },
             null,
@@ -82,6 +103,7 @@ export class GraphWebviewProvider {
         try {
             // Export graph from worker
             const graphData = await this.workerManager.exportGraph();
+            console.log(`Sending graph data to webview: ${graphData.symbols.length} symbols, ${graphData.edges.length} edges`);
 
             // Send to webview
             this.panel.webview.postMessage({
@@ -123,6 +145,91 @@ export class GraphWebviewProvider {
         } catch (error) {
             vscode.window.showErrorMessage(
                 `Failed to open file: ${error instanceof Error ? error.message : String(error)}`
+            );
+        }
+    }
+
+    /**
+     * Handle inspector panel messages by forwarding to worker
+     * and sending results back to webview
+     */
+    private async handleInspectorMessage(message: {
+        type: string;
+        requestId: string;
+        nodeId: string;
+        nodeType?: 'domain' | 'file' | 'symbol';
+        action?: string;
+        metric?: string;
+    }): Promise<void> {
+        if (!this.panel) return;
+
+        const messageId = `inspector-${Date.now()}`;
+
+        try {
+            // Forward to worker and wait for response
+            const response = await this.workerManager.sendInspectorRequest({
+                type: message.type as any,
+                id: messageId,
+                requestId: message.requestId,
+                nodeId: message.nodeId,
+                nodeType: message.nodeType,
+                action: message.action,
+                metric: message.metric,
+            });
+
+            // Send response back to webview
+            this.panel.webview.postMessage({
+                ...response,
+                requestId: message.requestId,
+            });
+        } catch (error) {
+            // Send error back to webview
+            this.panel.webview.postMessage({
+                type: `${message.type}-error`,
+                requestId: message.requestId,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+
+    /**
+     * Preview refactor changes in VS Code diff view
+     */
+    private async handlePreviewRefactor(message: { diff: string }): Promise<void> {
+        try {
+            // Open a new document with the diff content
+            const doc = await vscode.workspace.openTextDocument({
+                content: message.diff,
+                language: 'diff'
+            });
+            await vscode.window.showTextDocument(doc);
+        } catch (error) {
+            vscode.window.showErrorMessage(
+                `Failed to preview refactor: ${error instanceof Error ? error.message : String(error)}`
+            );
+        }
+    }
+
+    /**
+     * Apply refactor changes to actual files
+     */
+    private async handleApplyRefactor(message: { diff: string }): Promise<void> {
+        try {
+            const confirm = await vscode.window.showWarningMessage(
+                'Apply refactor changes? This will modify your files.',
+                { modal: true },
+                'Apply'
+            );
+
+            if (confirm !== 'Apply') {
+                return;
+            }
+
+            // TODO: Implement actual diff application
+            vscode.window.showInformationMessage('Refactor application not yet implemented');
+        } catch (error) {
+            vscode.window.showErrorMessage(
+                `Failed to apply refactor: ${error instanceof Error ? error.message : String(error)}`
             );
         }
     }

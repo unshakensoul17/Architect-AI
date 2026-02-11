@@ -5,3 +5,4 @@ dist/
 .vscode-test/
 *.vsix
 drizzle/
+.env

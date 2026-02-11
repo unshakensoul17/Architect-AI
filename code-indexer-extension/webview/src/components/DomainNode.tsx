@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
 
-export interface DomainNodeData {
+export interface DomainNodeData extends Record<string, unknown> {
     domain: string;
     health: {
         domain: string;
@@ -12,6 +12,10 @@ export interface DomainNodeData {
         status: 'healthy' | 'warning' | 'critical';
     };
     collapsed: boolean;
+    // Progressive visibility states
+    isDimmed?: boolean;
+    isActive?: boolean;
+    isClickable?: boolean;
 }
 
 interface DomainNodeProps {
@@ -19,7 +23,14 @@ interface DomainNodeProps {
 }
 
 const DomainNode = memo(({ data }: DomainNodeProps) => {
-    const { domain, health, collapsed } = data;
+    const {
+        domain,
+        health,
+        collapsed,
+        isDimmed = false,
+        isActive = false,
+        isClickable = true
+    } = data;
     const { healthScore, status, symbolCount, avgComplexity, coupling } = health;
 
     // Get domain display name and icon
@@ -63,17 +74,29 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
     // Health emoji
     const healthEmoji = status === 'healthy' ? '✅' : status === 'warning' ? '⚠️' : '❌';
 
+    // Calculate opacity and styling based on visibility state
+    const containerOpacity = isDimmed ? 0.3 : 1;
+    const borderWidth = isActive ? 4 : 3;
+    const boxShadow = isActive
+        ? `0 0 20px ${colors.border}40, 0 4px 12px rgba(0, 0, 0, 0.15)`
+        : '0 4px 12px rgba(0, 0, 0, 0.15)';
+
     return (
         <div
             style={{
                 minWidth: '400px',
                 minHeight: collapsed ? '120px' : '200px',
-                border: `3px solid ${colors.border}`,
+                border: `${borderWidth}px solid ${colors.border}`,
                 borderRadius: '12px',
                 backgroundColor: 'var(--vscode-editor-background)',
                 padding: 0,
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                boxShadow,
+                opacity: containerOpacity,
+                transition: 'opacity 0.3s ease, box-shadow 0.3s ease, border-width 0.2s ease',
+                cursor: isClickable ? 'pointer' : 'default',
+                pointerEvents: isDimmed ? 'none' : 'auto',
             }}
+            className={isClickable ? 'hover:ring-2 hover:ring-blue-400' : ''}
         >
             <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
 
@@ -105,6 +128,19 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
                     >
                         {symbolCount} symbols
                     </div>
+                    {isClickable && (
+                        <div
+                            style={{
+                                fontSize: '10px',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                backgroundColor: '#3b82f620',
+                                color: '#3b82f6',
+                            }}
+                        >
+                            Click to explore →
+                        </div>
+                    )}
                 </div>
 
                 {/* Health Badge */}

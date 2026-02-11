@@ -13,6 +13,7 @@ import {
     SymbolResult,
 } from './message-protocol';
 import { AIOrchestrator, createOrchestrator } from '../ai';
+import { InspectorService } from './inspector-service';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -22,6 +23,7 @@ class IndexWorker {
     private extractor: SymbolExtractor;
     private isReady: boolean = false;
     private orchestrator: AIOrchestrator | null = null;
+    private inspector: InspectorService | null = null;
 
     // Global symbol map for cross-file resolution
     private globalSymbolMap: Map<string, number> = new Map();
@@ -53,7 +55,11 @@ class IndexWorker {
             // Initialize AI Orchestrator
             this.orchestrator = createOrchestrator(this.db);
 
+            // Initialize Inspector Service
+            this.inspector = new InspectorService(this.db, this.orchestrator);
+
             this.isReady = true;
+            console.log('Worker: ready signal sent');
 
             // Send ready signal
             this.sendMessage({
@@ -61,6 +67,9 @@ class IndexWorker {
             });
         } catch (error) {
             console.error('Worker initialization failed:', error);
+            if (error instanceof Error) {
+                console.error('Stack:', error.stack);
+            }
             throw error;
         }
     }
@@ -165,8 +174,85 @@ class IndexWorker {
                     this.handleConfigureAI(request);
                     break;
 
+                // Inspector Panel Handlers
+                case 'inspector-overview':
+                    if (!this.inspector) {
+                        this.sendError(request.id, 'Inspector service not initialized');
+                        return;
+                    }
+                    this.inspector.getOverview(request.nodeId, request.nodeType)
+                        .then(data => this.sendMessage({
+                            type: 'inspector-overview-result',
+                            id: request.id,
+                            requestId: request.requestId,
+                            data
+                        }))
+                        .catch(err => this.sendError(request.id, err.message));
+                    break;
+
+                case 'inspector-dependencies':
+                    if (!this.inspector) {
+                        this.sendError(request.id, 'Inspector service not initialized');
+                        return;
+                    }
+                    this.inspector.getDependencies(request.nodeId, request.nodeType)
+                        .then(data => this.sendMessage({
+                            type: 'inspector-dependencies-result',
+                            id: request.id,
+                            requestId: request.requestId,
+                            data
+                        }))
+                        .catch(err => this.sendError(request.id, err.message));
+                    break;
+
+                case 'inspector-risks':
+                    if (!this.inspector) {
+                        this.sendError(request.id, 'Inspector service not initialized');
+                        return;
+                    }
+                    this.inspector.getRisks(request.nodeId, request.nodeType)
+                        .then(data => this.sendMessage({
+                            type: 'inspector-risks-result',
+                            id: request.id,
+                            requestId: request.requestId,
+                            data
+                        }))
+                        .catch(err => this.sendError(request.id, err.message));
+                    break;
+
+                case 'inspector-ai-action':
+                    if (!this.inspector) {
+                        this.sendError(request.id, 'Inspector service not initialized');
+                        return;
+                    }
+                    this.inspector.executeAIAction(request.nodeId, request.action)
+                        .then(data => this.sendMessage({
+                            type: 'inspector-ai-result',
+                            id: request.id,
+                            requestId: request.requestId,
+                            data
+                        }))
+                        .catch(err => this.sendError(request.id, err.message));
+                    break;
+
+                case 'inspector-ai-why':
+                    if (!this.inspector) {
+                        this.sendError(request.id, 'Inspector service not initialized');
+                        return;
+                    }
+                    this.inspector.explainRisk(request.nodeId, request.metric)
+                        .then(content => this.sendMessage({
+                            type: 'inspector-ai-why-result',
+                            id: request.id,
+                            requestId: request.requestId,
+                            content,
+                            model: 'groq'
+                        }))
+                        .catch(err => this.sendError(request.id, err.message));
+                    break;
+
                 default:
-                    this.sendError(request.id, `Unknown request type: ${(request as any).type}`);
+                    this.sendError((request as any).id, `Unknown request type: ${(request as any).type}`);
             }
         } catch (error) {
             this.sendError(
@@ -346,6 +432,7 @@ class IndexWorker {
         }
 
         const graph = this.db.exportGraph();
+        console.log(`Worker: exported graph with ${graph.symbols.length} symbols, ${graph.edges.length} edges`);
 
         this.sendMessage({
             type: 'graph-export',

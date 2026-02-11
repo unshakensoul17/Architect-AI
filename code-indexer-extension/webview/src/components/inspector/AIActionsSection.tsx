@@ -1,0 +1,239 @@
+/**
+ * AI Actions Section Component
+ *
+ * Renders action buttons:
+ * - ▶ Explain
+ * - ⚠ Audit
+ * - 🛠 Refactor
+ * - 🔗 Dependencies
+ * - 📊 Optimize
+ *
+ * Shows loading state, cache indicator, and model used
+ * Renders markdown results inline
+ */
+
+import { memo, useCallback, useState } from 'react';
+import { useSelectedId, useAIResult, useIsLoadingAI, useInspectorActions } from '../../stores/useInspectorStore';
+import CollapsibleSection from './CollapsibleSection';
+import { getDataProvider } from '../../panel/dataProvider';
+import type { VSCodeAPI } from '../../types';
+import type { AIResult } from '../../types/inspector';
+
+interface AIActionsSectionProps {
+    vscode: VSCodeAPI;
+}
+
+type AIAction = 'explain' | 'audit' | 'refactor' | 'dependencies' | 'optimize';
+
+const AI_ACTIONS: { action: AIAction; icon: string; label: string }[] = [
+    { action: 'explain', icon: '▶', label: 'Explain' },
+    { action: 'audit', icon: '⚠', label: 'Audit' },
+    { action: 'refactor', icon: '🛠', label: 'Refactor' },
+    { action: 'dependencies', icon: '🔗', label: 'Dependencies' },
+    { action: 'optimize', icon: '📊', label: 'Optimize' },
+];
+
+const AIActionsSection = memo(({ vscode }: AIActionsSectionProps) => {
+    const selectedId = useSelectedId();
+    const aiResult = useAIResult();
+    const isLoading = useIsLoadingAI();
+    const { setAIResult, setLoadingAI } = useInspectorActions();
+
+    const [activeAction, setActiveAction] = useState<AIAction | null>(null);
+
+    const handleActionClick = useCallback(
+        async (action: AIAction) => {
+            if (!selectedId || isLoading) return;
+
+            setActiveAction(action);
+            setLoadingAI(true);
+
+            try {
+                const provider = getDataProvider(vscode);
+                const result = await provider.executeAIAction(selectedId, action);
+                setAIResult({
+                    action,
+                    content: result.content || '',
+                    model: result.model || 'groq',
+                    cached: result.cached || false,
+                    loading: false,
+                    patch: result.patch
+                });
+            } catch (error) {
+                setAIResult({
+                    action,
+                    content: '',
+                    model: 'groq',
+                    cached: false,
+                    loading: false,
+                    error: error instanceof Error ? error.message : 'Failed to execute action',
+                });
+            }
+        },
+        [selectedId, isLoading, vscode, setAIResult, setLoadingAI]
+    );
+
+    const handleClearResult = useCallback(() => {
+        setAIResult(null);
+        setActiveAction(null);
+    }, [setAIResult]);
+
+    return (
+        <CollapsibleSection id="ai-actions" title="AI Actions" icon="🤖" loading={false}>
+            <div className="ai-actions-container">
+                {/* Action Buttons */}
+                <div className="ai-action-buttons">
+                    {AI_ACTIONS.map(({ action, icon, label }) => (
+                        <button
+                            key={action}
+                            className={`ai-action-btn ${activeAction === action ? 'active' : ''}`}
+                            onClick={() => handleActionClick(action)}
+                            disabled={isLoading || !selectedId}
+                            title={label}
+                        >
+                            <span className="ai-action-icon">{icon}</span>
+                            <span className="ai-action-label">{label}</span>
+                        </button>
+                    ))}
+                </div>
+
+                {/* Loading State */}
+                {isLoading && (
+                    <div className="ai-loading">
+                        <span className="ai-loading-spinner">⏳</span>
+                        <span>Processing with AI...</span>
+                    </div>
+                )}
+
+                {/* Result Display */}
+                {aiResult && !isLoading && (
+                    <div className="ai-result-container">
+                        {/* Result Header */}
+                        <div className="ai-result-header">
+                            <div className="ai-result-meta">
+                                <span className="ai-model-badge">
+                                    {aiResult.model === 'vertex' ? '🧠 Vertex' : '⚡ Groq'}
+                                </span>
+                                {aiResult.cached && (
+                                    <span className="ai-cached-badge">📦 Cached</span>
+                                )}
+                            </div>
+                            <button
+                                className="ai-result-close"
+                                onClick={handleClearResult}
+                                title="Clear result"
+                            >
+                                ×
+                            </button>
+                        </div>
+
+                        {/* Error State */}
+                        {aiResult.error && (
+                            <div className="ai-error">
+                                ❌ {aiResult.error}
+                            </div>
+                        )}
+
+                        {/* Content */}
+                        {aiResult.content && (
+                            <div className="ai-result-content">
+                                <AIMarkdownRenderer content={aiResult.content} />
+                            </div>
+                        )}
+
+                        {/* Refactor Patch */}
+                        {aiResult.patch && (
+                            <RefactorPatchDisplay patch={aiResult.patch} vscode={vscode} />
+                        )}
+                    </div>
+                )}
+            </div>
+        </CollapsibleSection>
+    );
+});
+
+// Simple markdown renderer for AI results
+const AIMarkdownRenderer = memo(({ content }: { content: string }) => {
+    // Basic markdown rendering - code blocks, bold, lists
+    const html = content
+        // Code blocks
+        .replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+        // Inline code
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        // Bold
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        // Italic
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        // Lists
+        .replace(/^- (.+)$/gm, '<li>$1</li>')
+        // Headers
+        .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+        .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+        // Paragraphs
+        .replace(/\n\n/g, '</p><p>')
+        // Wrap in paragraph
+        .replace(/^/, '<p>')
+        .replace(/$/, '</p>');
+
+    return (
+        <div
+            className="ai-markdown"
+            dangerouslySetInnerHTML={{ __html: html }}
+        />
+    );
+});
+
+AIMarkdownRenderer.displayName = 'AIMarkdownRenderer';
+
+// Refactor patch display component
+interface RefactorPatchDisplayProps {
+    patch: { summary: string; impactedNodeCount: number; diff: string };
+    vscode: VSCodeAPI;
+}
+
+const RefactorPatchDisplay = memo(({ patch, vscode }: RefactorPatchDisplayProps) => {
+    const handlePreview = useCallback(() => {
+        vscode.postMessage({
+            type: 'preview-refactor',
+            diff: patch.diff,
+        });
+    }, [vscode, patch.diff]);
+
+    const handleApply = useCallback(() => {
+        vscode.postMessage({
+            type: 'apply-refactor',
+            diff: patch.diff,
+        });
+    }, [vscode, patch.diff]);
+
+    const handleCancel = useCallback(() => {
+        // Just close the patch display
+    }, []);
+
+    return (
+        <div className="refactor-patch">
+            <div className="patch-summary">
+                <strong>Summary:</strong> {patch.summary}
+            </div>
+            <div className="patch-impact">
+                <strong>Impact:</strong> {patch.impactedNodeCount} nodes affected
+            </div>
+            <div className="patch-actions">
+                <button className="patch-btn preview" onClick={handlePreview}>
+                    👁 Preview
+                </button>
+                <button className="patch-btn apply" onClick={handleApply}>
+                    ✅ Apply
+                </button>
+                <button className="patch-btn cancel" onClick={handleCancel}>
+                    ❌ Cancel
+                </button>
+            </div>
+        </div>
+    );
+});
+
+RefactorPatchDisplay.displayName = 'RefactorPatchDisplay';
+AIActionsSection.displayName = 'AIActionsSection';
+
+export default AIActionsSection;

@@ -1,8 +1,13 @@
 // Purpose: MCP (Model Context Protocol) tool definitions
 // Exposes read-only database access for AI models
-// Tools: get_symbol, get_dependencies
+// Tools: get_symbol, get_dependencies, classify_domain
 
 import { Symbol, Edge, SymbolContext } from '../../db/schema';
+import {
+    ClassifyDomainInput,
+    ClassifyDomainResult,
+    classifyDomainToolDefinition
+} from './domain-tools';
 
 /**
  * MCP Tool input schema types
@@ -34,6 +39,9 @@ export interface GetDependenciesResult {
     outgoing?: { edge: Edge; symbol: Symbol }[];
     error?: string;
 }
+
+// Re-export domain tool types
+export type { ClassifyDomainInput, ClassifyDomainResult };
 
 /**
  * MCP Tool definitions following Model Context Protocol spec
@@ -86,18 +94,19 @@ export const mcpToolDefinitions = [
             required: ['symbolId'],
         },
     },
+    classifyDomainToolDefinition,
 ];
 
 /**
  * Tool name type for type-safe tool calls
  */
-export type MCPToolName = 'get_symbol' | 'get_dependencies';
+export type MCPToolName = 'get_symbol' | 'get_dependencies' | 'classify_domain';
 
 /**
  * Validate if a tool name is a valid MCP tool
  */
 export function isValidMCPTool(toolName: string): toolName is MCPToolName {
-    return toolName === 'get_symbol' || toolName === 'get_dependencies';
+    return toolName === 'get_symbol' || toolName === 'get_dependencies' || toolName === 'classify_domain';
 }
 
 /**

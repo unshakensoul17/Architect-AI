@@ -110,6 +110,12 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    context.subscriptions.push(
+        vscode.commands.registerCommand('codeIndexer.configureAI', async () => {
+            await configureAI();
+        })
+    );
+
     outputChannel.appendLine('Code Indexer extension activated');
 }
 
@@ -427,4 +433,42 @@ async function updateWorkerConfig() {
     } catch (error) {
         outputChannel.appendLine(`Failed to update AI config: ${error}`);
     }
+}
+/**
+ * Configure AI API keys via input boxes
+ */
+async function configureAI() {
+    const config = vscode.workspace.getConfiguration('codeIndexer');
+
+    // 1. Get Groq API Key
+    const currentGroqKey = config.get<string>('groqApiKey') || '';
+    const groqKey = await vscode.window.showInputBox({
+        title: 'Configure Groq API Key',
+        prompt: 'Enter your Groq API Key (Llama 3.1 analysis)',
+        value: currentGroqKey,
+        password: true,
+        placeHolder: 'gsk_...'
+    });
+
+    if (groqKey !== undefined) {
+        await config.update('groqApiKey', groqKey, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage('Groq API Key updated successfully.');
+    }
+
+    // 2. Get Vertex Project ID
+    const currentVertexProject = config.get<string>('vertexProject') || '';
+    const vertexProject = await vscode.window.showInputBox({
+        title: 'Configure Vertex AI Project',
+        prompt: 'Enter your Google Cloud Project ID (Gemini 1.5 analysis)',
+        value: currentVertexProject,
+        placeHolder: 'my-project-id'
+    });
+
+    if (vertexProject !== undefined) {
+        await config.update('vertexProject', vertexProject, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage('Vertex Project ID updated successfully.');
+    }
+
+    // Explicitly trigger worker update (though onDidChangeConfiguration should handle it)
+    await updateWorkerConfig();
 }

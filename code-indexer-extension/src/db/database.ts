@@ -766,6 +766,87 @@ export class CodeIndexDatabase {
     }
 
     /**
+     * Get files belonging to a specific domain
+     */
+    getFilesByDomain(domain: string): File[] {
+        // Find files that have at least one symbol in this domain
+        const result = this.db.prepare(`
+            SELECT DISTINCT f.* 
+            FROM files f
+            JOIN symbols s ON s.file_path = f.file_path
+            WHERE s.domain = ?
+        `).all(domain) as any[];
+
+        return result.map(row => ({
+            id: row.id,
+            filePath: row.file_path,
+            contentHash: row.content_hash,
+            lastIndexedAt: row.last_indexed_at
+        }));
+    }
+
+    /**
+     * Get file by path
+     */
+    getFile(filePath: string): { lastModified: string } | null {
+        const file = this.db.prepare('SELECT last_indexed_at FROM files WHERE file_path = ?').get(filePath) as any;
+        if (!file) return null;
+        return { lastModified: file.last_indexed_at };
+    }
+
+    /**
+     * Get statistics for a single file
+     */
+    getFileStats(filePath: string): {
+        symbolCount: number;
+        functionCount: number;
+        importCount: number;
+        exportCount: number;
+        avgComplexity: number
+    } {
+        const stats = this.db.prepare(`
+            SELECT 
+                COUNT(*) as symbol_count,
+                SUM(CASE WHEN type IN ('function', 'method', 'constructor') THEN 1 ELSE 0 END) as function_count,
+                AVG(complexity) as avg_complexity
+            FROM symbols
+            WHERE file_path = ?
+        `).get(filePath) as any;
+
+        // Note: import/export counts would require analyzing edges which is expensive here
+        // We'll return 0 for now and let the inspector service calculate it if needed via edges
+        return {
+            symbolCount: stats.symbol_count || 0,
+            functionCount: stats.function_count || 0,
+            importCount: 0,
+            exportCount: 0,
+            avgComplexity: stats.avg_complexity || 0
+        };
+    }
+
+    /**
+     * Get incoming edges for a symbol
+     */
+    getIncomingEdges(symbolId: number): Edge[] {
+        return this.drizzle
+            .select()
+            .from(edges)
+            .where(eq(edges.targetId, symbolId))
+            .all();
+    }
+
+    /**
+     * Get outgoing edges for a symbol
+     */
+    getOutgoingEdges(symbolId: number): Edge[] {
+        return this.drizzle
+            .select()
+            .from(edges)
+            .where(eq(edges.sourceId, symbolId))
+            .all();
+    }
+
+    /**
      * Close database connection
      */
     close(): void {

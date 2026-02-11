@@ -8,9 +8,12 @@ import {
     GetSymbolResult,
     GetDependenciesInput,
     GetDependenciesResult,
+    ClassifyDomainInput,
+    ClassifyDomainResult,
     isValidMCPTool,
     mcpToolDefinitions
 } from './tools';
+import { DomainClassifier } from '../../domain/classifier';
 
 /**
  * MCP Tool call request
@@ -40,9 +43,11 @@ export interface MCPToolResponse {
  */
 export class MCPServer {
     private db: CodeIndexDatabase;
+    private domainClassifier: DomainClassifier;
 
     constructor(db: CodeIndexDatabase) {
         this.db = db;
+        this.domainClassifier = new DomainClassifier();
     }
 
     /**
@@ -61,7 +66,7 @@ export class MCPServer {
             return {
                 success: false,
                 toolName: call.toolName,
-                error: `Unknown tool: ${call.toolName}. Available tools: get_symbol, get_dependencies`,
+                error: `Unknown tool: ${call.toolName}. Available tools: get_symbol, get_dependencies, classify_domain`,
             };
         }
 
@@ -79,6 +84,13 @@ export class MCPServer {
                         success: true,
                         toolName: call.toolName,
                         result: this.executeGetDependencies(call.arguments as unknown as GetDependenciesInput),
+                    };
+
+                case 'classify_domain':
+                    return {
+                        success: true,
+                        toolName: call.toolName,
+                        result: this.executeClassifyDomain(call.arguments as unknown as ClassifyDomainInput),
                     };
 
                 default:
@@ -161,6 +173,32 @@ export class MCPServer {
     }
 
     /**
+     * Execute classify_domain tool
+     */
+    private executeClassifyDomain(input: ClassifyDomainInput): ClassifyDomainResult {
+        try {
+            // Use heuristic classifier
+            const classification = this.domainClassifier.classify(
+                input.filePath,
+                input.imports,
+                input.symbolName
+            );
+
+            return {
+                success: true,
+                domain: classification.domain,
+                confidence: classification.confidence,
+                reasoning: classification.reason,
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: `Domain classification failed: ${(error as Error).message}`,
+            };
+        }
+    }
+
+    /**
      * Format tool results for inclusion in AI prompts
      */
     formatToolResultForPrompt(response: MCPToolResponse): string {
@@ -210,6 +248,19 @@ export class MCPServer {
             }
 
             return output;
+        }
+
+        if (response.toolName === 'classify_domain') {
+            const cr = result as ClassifyDomainResult;
+            if (cr.domain) {
+                let output = `Domain Classification:\n`;
+                output += `Domain: ${cr.domain}\n`;
+                output += `Confidence: ${((cr.confidence || 0) * 100).toFixed(0)}%\n`;
+                if (cr.reasoning) {
+                    output += `Reasoning: ${cr.reasoning}\n`;
+                }
+                return output;
+            }
         }
 
         return JSON.stringify(result, null, 2);
