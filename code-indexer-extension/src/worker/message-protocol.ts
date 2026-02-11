@@ -72,6 +72,7 @@ export type WorkerRequest =
         config: {
             vertexProject?: string;
             groqApiKey?: string;
+            geminiApiKey?: string;
         };
     }
     | {
@@ -120,6 +121,10 @@ export type WorkerRequest =
         requestId: string;
         nodeId: string;
         metric: string;
+    }
+    | {
+        type: 'refine-graph';
+        id: string;
     };
 
 /**
@@ -246,6 +251,12 @@ export type WorkerResponse =
         requestId: string;
         content: string;
         model: string;
+    }
+    | {
+        type: 'refine-graph-complete';
+        id: string;
+        refinedNodeCount: number;
+        implicitLinkCount: number;
     };
 
 /**

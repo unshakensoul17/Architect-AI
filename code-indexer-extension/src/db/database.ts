@@ -77,7 +77,12 @@ export class CodeIndexDatabase {
         range_start_column INTEGER NOT NULL,
         range_end_line INTEGER NOT NULL,
         range_end_column INTEGER NOT NULL,
-        complexity INTEGER NOT NULL DEFAULT 0
+        complexity INTEGER NOT NULL DEFAULT 0,
+        domain TEXT,
+        purpose TEXT,
+        impact_depth INTEGER,
+        search_tags TEXT,
+        fragility TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
@@ -89,6 +94,7 @@ export class CodeIndexDatabase {
         source_id INTEGER NOT NULL,
         target_id INTEGER NOT NULL,
         type TEXT NOT NULL,
+        reason TEXT,
         FOREIGN KEY (source_id) REFERENCES symbols(id) ON DELETE CASCADE,
         FOREIGN KEY (target_id) REFERENCES symbols(id) ON DELETE CASCADE
       );
@@ -134,20 +140,37 @@ export class CodeIndexDatabase {
       );
     `);
 
-        // Migration: Add domain column to existing symbols table if it doesn't exist
+        // Migrations: Add new columns if they don't exist
         try {
-            const tableInfo = this.db.prepare("PRAGMA table_info(symbols)").all() as Array<{ name: string }>;
-            const hasDomainColumn = tableInfo.some(col => col.name === 'domain');
+            const symbolsInfo = this.db.prepare("PRAGMA table_info(symbols)").all() as Array<{ name: string }>;
+            const existingSymbolCols = symbolsInfo.map(col => col.name);
 
-            if (!hasDomainColumn) {
-                console.log('Migrating database: Adding domain column to symbols table...');
-                this.db.exec('ALTER TABLE symbols ADD COLUMN domain TEXT');
-                this.db.exec('CREATE INDEX IF NOT EXISTS idx_symbols_domain ON symbols(domain)');
-                console.log('Migration complete: domain column added successfully');
+            const migrations = [
+                { name: 'domain', type: 'TEXT' },
+                { name: 'purpose', type: 'TEXT' },
+                { name: 'impact_depth', type: 'INTEGER' },
+                { name: 'search_tags', type: 'TEXT' },
+                { name: 'fragility', type: 'TEXT' }
+            ];
+
+            for (const migration of migrations) {
+                if (!existingSymbolCols.includes(migration.name)) {
+                    console.log(`Migrating symbols table: Adding ${migration.name} column...`);
+                    this.db.exec(`ALTER TABLE symbols ADD COLUMN ${migration.name} ${migration.type}`);
+                    if (migration.name === 'domain') {
+                        this.db.exec('CREATE INDEX IF NOT EXISTS idx_symbols_domain ON symbols(domain)');
+                    }
+                }
+            }
+
+            // Migration for edges table
+            const edgesInfo = this.db.prepare("PRAGMA table_info(edges)").all() as Array<{ name: string }>;
+            if (!edgesInfo.some(col => col.name === 'reason')) {
+                console.log('Migrating edges table: Adding reason column...');
+                this.db.exec('ALTER TABLE edges ADD COLUMN reason TEXT');
             }
         } catch (error) {
             console.error('Migration error:', error);
-            // Don't throw - table might not exist yet on first run
         }
     }
 
@@ -160,8 +183,9 @@ export class CodeIndexDatabase {
 
         const insertStmt = this.db.prepare(`
       INSERT INTO symbols (name, type, file_path, range_start_line, range_start_column, 
-                          range_end_line, range_end_column, complexity, domain)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          range_end_line, range_end_column, complexity, domain, 
+                          purpose, impact_depth, search_tags, fragility)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
         const transaction = this.db.transaction((items: NewSymbol[]) => {
@@ -175,7 +199,11 @@ export class CodeIndexDatabase {
                     item.rangeEndLine,
                     item.rangeEndColumn,
                     item.complexity || 0,
-                    item.domain || null
+                    item.domain || null,
+                    item.purpose || null,
+                    item.impactDepth || null,
+                    item.searchTags || null,
+                    item.fragility || null
                 );
                 insertedIds.push(Number(info.lastInsertRowid));
             }
@@ -190,15 +218,15 @@ export class CodeIndexDatabase {
      */
     insertEdges(edgesData: NewEdge[]): void {
         const insertStmt = this.db.prepare(`
-      INSERT INTO edges (source_id, target_id, type)
-      VALUES (?, ?, ?)
+      INSERT INTO edges (source_id, target_id, type, reason)
+      VALUES (?, ?, ?, ?)
     `);
 
         const transaction = this.db.transaction((items: NewEdge[]) => {
             for (const item of items) {
                 // Only insert if both source and target are valid
                 if (item.sourceId && item.targetId) {
-                    insertStmt.run(item.sourceId, item.targetId, item.type);
+                    insertStmt.run(item.sourceId, item.targetId, item.type, item.reason || null);
                 }
             }
         });
@@ -323,6 +351,11 @@ export class CodeIndexDatabase {
                     rangeEndLine: row.range_end_line,
                     rangeEndColumn: row.range_end_column,
                     complexity: row.complexity,
+                    domain: row.domain,
+                    purpose: row.purpose,
+                    impactDepth: row.impact_depth,
+                    searchTags: row.search_tags,
+                    fragility: row.fragility,
                 });
             }
         }
@@ -593,6 +626,10 @@ export class CodeIndexDatabase {
                 },
                 complexity: s.complexity,
                 domain: s.domain,
+                purpose: s.purpose,
+                impactDepth: s.impactDepth,
+                searchTags: s.searchTags ? JSON.parse(s.searchTags) : undefined,
+                fragility: s.fragility,
             })),
             edges: allEdges.map((e) => {
                 const sourceSymbol = symbolMap.get(e.sourceId);
@@ -606,6 +643,7 @@ export class CodeIndexDatabase {
                         ? `${targetSymbol.filePath}:${targetSymbol.name}:${targetSymbol.rangeStartLine}`
                         : `unknown:${e.targetId}`,
                     type: e.type,
+                    reason: e.reason,
                 };
             }),
             files: allFiles.map((f) => ({
@@ -844,6 +882,31 @@ export class CodeIndexDatabase {
             .from(edges)
             .where(eq(edges.sourceId, symbolId))
             .all();
+    }
+
+    /**
+     * Update symbol metadata from AI analysis
+     */
+    updateSymbolsMetadata(updates: { id: number; metadata: any }[]): void {
+        const updateStmt = this.db.prepare(`
+            UPDATE symbols 
+            SET purpose = ?, impact_depth = ?, search_tags = ?, fragility = ?
+            WHERE id = ?
+        `);
+
+        const transaction = this.db.transaction((items: { id: number; metadata: any }[]) => {
+            for (const item of items) {
+                updateStmt.run(
+                    item.metadata.purpose || null,
+                    item.metadata.impactDepth || null,
+                    item.metadata.searchTags || null,
+                    item.metadata.fragility || null,
+                    item.id
+                );
+            }
+        });
+
+        transaction(updates);
     }
 
     /**

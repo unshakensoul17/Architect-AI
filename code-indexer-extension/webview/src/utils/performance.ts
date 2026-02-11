@@ -7,10 +7,18 @@ export class PerformanceMonitor {
     private lastTime = performance.now();
     private fps = 60;
     private fpsCallback?: (fps: number) => void;
+    private rafId: number | null = null;
 
     start(callback?: (fps: number) => void) {
         this.fpsCallback = callback;
         this.measureFPS();
+    }
+
+    stop() {
+        if (this.rafId !== null) {
+            cancelAnimationFrame(this.rafId);
+            this.rafId = null;
+        }
     }
 
     private measureFPS = () => {
@@ -27,7 +35,7 @@ export class PerformanceMonitor {
             }
         }
 
-        requestAnimationFrame(this.measureFPS);
+        this.rafId = requestAnimationFrame(this.measureFPS);
     };
 
     getFPS(): number {

@@ -147,7 +147,7 @@ export class WorkerManager {
     /**
      * Send request to worker
      */
-    private sendRequest(request: WorkerRequest): Promise<WorkerResponse> {
+    private sendRequest(request: WorkerRequest, timeoutMs?: number): Promise<WorkerResponse> {
         if (!this.worker || !this.isReady) {
             return Promise.reject(new Error('Worker not ready'));
         }
@@ -156,7 +156,7 @@ export class WorkerManager {
             const timeout = setTimeout(() => {
                 this.pendingRequests.delete(request.id);
                 reject(new Error(`Request ${request.type} timed out`));
-            }, this.REQUEST_TIMEOUT);
+            }, timeoutMs || this.REQUEST_TIMEOUT);
 
             this.pendingRequests.set(request.id, { resolve, reject, timeout });
             this.worker!.postMessage(request);
@@ -343,9 +343,28 @@ export class WorkerManager {
     }
 
     /**
+     * Refine graph with AI (Architect Pass)
+     */
+    async refineGraph(): Promise<{ refinedNodeCount: number; implicitLinkCount: number }> {
+        const response = await this.sendRequest({
+            type: 'refine-graph',
+            id: this.generateId(),
+        }, 120000); // 2 minute timeout for AI pass
+
+        if (response.type !== 'refine-graph-complete') {
+            throw new Error('Unexpected response type');
+        }
+
+        return {
+            refinedNodeCount: response.refinedNodeCount,
+            implicitLinkCount: response.implicitLinkCount,
+        };
+    }
+
+    /**
      * Configure AI settings
      */
-    async configureAI(config: { vertexProject?: string; groqApiKey?: string }): Promise<void> {
+    async configureAI(config: { vertexProject?: string; groqApiKey?: string; geminiApiKey?: string }): Promise<void> {
         const response = await this.sendRequest({
             type: 'configure-ai',
             id: this.generateId(),

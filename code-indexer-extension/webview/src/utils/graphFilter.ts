@@ -26,6 +26,12 @@ export function applyViewMode(
     allEdges: Edge[],
     context: FilterContext
 ): FilteredGraph {
+    // Apply search filter if query exists and we are in default/architecture mode
+    // Or maybe search overrides everything?
+    if (context.searchQuery && context.searchQuery.length > 2) {
+        return filterSearchMode(allNodes, allEdges, context);
+    }
+
     switch (context.mode) {
         case 'architecture':
             return filterArchitectureMode(allNodes, allEdges, context);
@@ -38,6 +44,77 @@ export function applyViewMode(
         default:
             return { visibleNodes: allNodes, visibleEdges: allEdges };
     }
+}
+
+/**
+ * Semantic Search Mode: Filter by AI tags and name
+ */
+function filterSearchMode(
+    allNodes: Node[],
+    allEdges: Edge[],
+    context: FilterContext
+): FilteredGraph {
+    const query = context.searchQuery?.toLowerCase() || '';
+    if (!query) return { visibleNodes: allNodes, visibleEdges: allEdges };
+
+    const visibleNodes = allNodes.map((node) => {
+        const data = node.data as any;
+        const matchesName = data.label?.toLowerCase().includes(query) || data.filePath?.toLowerCase().includes(query);
+
+        // Check AI tags
+        const tags = data.searchTags || [];
+        const matchesTags = tags.some((tag: string) => tag.toLowerCase().includes(query));
+
+        const isMatch = matchesName || matchesTags;
+        const targetOpacity = isMatch ? 1.0 : 0.15;
+
+        // Skip cloning if state hasn't changed
+        if (data.opacity === targetOpacity &&
+            data.isHighlighted === isMatch) {
+            return node;
+        }
+
+        return {
+            ...node,
+            data: {
+                ...node.data,
+                opacity: targetOpacity,
+                isHighlighted: isMatch,
+                disableHeatmap: true,
+            },
+            style: {
+                ...node.style,
+                opacity: targetOpacity,
+                border: isMatch ? '2px solid #3b82f6' : undefined,
+            },
+        };
+    });
+
+    // Build lookup map for O(1) node access
+    const nodeMap = new Map(visibleNodes.map(n => [n.id, n]));
+
+    // Edges are dimmed unless both nodes match
+    const visibleEdges = allEdges.map((edge) => {
+        const sourceNode = nodeMap.get(edge.source);
+        const targetNode = nodeMap.get(edge.target);
+        const sourceMatch = (sourceNode?.data as any)?.isHighlighted;
+        const targetMatch = (targetNode?.data as any)?.isHighlighted;
+
+        const isVisible = sourceMatch && targetMatch;
+        const targetOpacity = isVisible ? 1.0 : 0.1;
+
+        if (edge.style?.opacity === targetOpacity) return edge;
+
+        return {
+            ...edge,
+            style: {
+                ...edge.style,
+                opacity: targetOpacity,
+            }
+        };
+    });
+
+    return { visibleNodes, visibleEdges };
 }
 
 /**
@@ -285,14 +362,35 @@ function filterImpactMode(
         const isFocused = node.id === focusedNodeId;
         const isRelated = relatedNodeIds.has(node.id);
         const targetOpacity = isFocused || isRelated ? 1.0 : 0.15;
+
+        // Use AI impact depth for styling if available
+        let borderColor: string | undefined;
+        let borderWidth: string | undefined;
+
+        if (isRelated) {
+            const depth = (node.data as any)?.impactDepth || 0;
+            if (depth >= 8) {
+                borderColor = '#ef4444'; // Red for high impact
+                borderWidth = '2px';
+            } else if (depth >= 5) {
+                borderColor = '#f97316'; // Orange for medium impact
+                borderWidth = '2px';
+            }
+        }
+        if (isFocused) {
+            borderColor = '#3b82f6';
+            borderWidth = '3px';
+        }
+
         const currentOpacity = (node.data as any)?.opacity;
         const currentFocused = (node.data as any)?.isFocused;
         const currentHighlight = (node.data as any)?.isHighlighted;
 
-        // Skip cloning if state hasn't changed (check all properties)
+        // Skip cloning if state hasn't changed (approximate check)
         if (currentOpacity === targetOpacity &&
             currentFocused === isFocused &&
-            currentHighlight === (isFocused || isRelated)) {
+            currentHighlight === (isFocused || isRelated) &&
+            node.style?.borderColor === borderColor) {
             return node;
         }
 
@@ -307,7 +405,7 @@ function filterImpactMode(
             style: {
                 ...node.style,
                 opacity: targetOpacity,
-                border: isFocused ? '3px solid #3b82f6' : undefined,
+                border: borderColor ? `${borderWidth || '1px'} solid ${borderColor}` : undefined,
             },
         };
     });

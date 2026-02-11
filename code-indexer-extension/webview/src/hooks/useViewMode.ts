@@ -17,9 +17,10 @@ interface UseViewModeReturn {
     impactStats: ImpactStats | null;
     setImpactStats: (stats: ImpactStats | null) => void;
     viewState: ViewState;
+    searchQuery?: string;
 }
 
-export function useViewMode(vscode: VSCodeAPI): UseViewModeReturn {
+export function useViewMode(vscode: VSCodeAPI, searchQuery?: string): UseViewModeReturn {
     const [currentMode, setCurrentMode] = useState<ViewMode>('architecture');
     const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
     const [relatedNodeIds, setRelatedNodeIds] = useState<Set<string>>(new Set());
@@ -66,5 +67,6 @@ export function useViewMode(vscode: VSCodeAPI): UseViewModeReturn {
         impactStats,
         setImpactStats,
         viewState,
+        searchQuery
     };
 }

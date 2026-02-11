@@ -5,12 +5,36 @@
 import { IntentRouter, ClassifiedIntent } from './intent-router';
 import { GroqClient, createGroqClient } from './groq-client';
 import { VertexClient, createVertexClient } from './vertex-client';
+import { GeminiClient, createGeminiClient } from './gemini-client';
 import { MCPServer, MCPToolCall, MCPToolResponse } from './mcp/server';
 import { CodeIndexDatabase } from '../db/database';
 import { SymbolContext } from '../db/schema';
 import { DomainClassification, DomainType } from '../domain/classifier';
 import { DOMAIN_DESCRIPTIONS } from './mcp/domain-tools';
 import * as fs from 'fs';
+import { StructuralSkeleton } from '../worker/parser';
+
+/**
+ * Refined metadata from Architect Pass
+ */
+export interface RefinedNodeData {
+    id: string; // matches format used in graph
+    purpose: string;
+    impact_depth: number;
+    search_tags: string[]; // will be serialized to JSON in DB
+    fragility: string;
+}
+
+export interface RefinedEdgeData {
+    sourceId: string;
+    targetId: string;
+    reason: string;
+}
+
+export interface RefinedGraph {
+    nodes: Record<string, RefinedNodeData>;
+    implicit_links: RefinedEdgeData[];
+}
 
 /**
  * AI Response from the orchestrator
@@ -53,6 +77,7 @@ export class AIOrchestrator {
     private intentRouter: IntentRouter;
     private groqClient: GroqClient | null;
     private vertexClient: VertexClient | null;
+    private geminiClient: GeminiClient | null;
     private mcpServer: MCPServer;
     private db: CodeIndexDatabase;
 
@@ -64,6 +89,7 @@ export class AIOrchestrator {
         // Initialize AI clients (will be null if API keys not available)
         this.groqClient = createGroqClient();
         this.vertexClient = createVertexClient();
+        this.geminiClient = createGeminiClient();
     }
 
     /**
@@ -448,7 +474,7 @@ Choose the most appropriate domain based on the symbol's purpose and context.`;
     /**
      * Update AI client configuration
      */
-    updateConfig(config: { vertexProject?: string; groqApiKey?: string }) {
+    updateConfig(config: { vertexProject?: string; groqApiKey?: string; geminiApiKey?: string }) {
         if (config.groqApiKey) {
             console.log('[Orchestrator] Updating Groq client with new API key');
             this.groqClient = createGroqClient({ apiKey: config.groqApiKey });
@@ -457,6 +483,138 @@ Choose the most appropriate domain based on the symbol's purpose and context.`;
         if (config.vertexProject) {
             console.log('[Orchestrator] Updating Vertex AI client with new project ID');
             this.vertexClient = createVertexClient({ projectId: config.vertexProject });
+        }
+
+        if (config.geminiApiKey) {
+            console.log('[Orchestrator] Updating Gemini client with new API key');
+            this.geminiClient = createGeminiClient({ apiKey: config.geminiApiKey });
+        }
+    }
+    // } removed to keep methods inside class
+
+    /**
+     * Architect Pass: Refine system graph using Gemini 1.5 Pro
+     * Sends structural skeleton to AI to infer purpose, impact, and implicit links
+     */
+    async refineSystemGraph(skeleton: Record<string, StructuralSkeleton>): Promise<RefinedGraph> {
+        if (!this.vertexClient && !this.geminiClient) {
+            throw new Error('Gemini or Vertex AI client not initialized (Project ID or API Key missing)');
+        }
+
+        const client = this.geminiClient || this.vertexClient!;
+
+        const methodStartTime = performance.now();
+        const skeletonJson = JSON.stringify(skeleton, null, 2);
+
+        // Check Cache (Critical for cost saving)
+        // We use a specific prefix for architect pass
+        const cacheKey = `architect_pass_v1:${CodeIndexDatabase.computeHash(skeletonJson)}`;
+        const cachedEntry = this.db.getAICache(cacheKey);
+
+        if (cachedEntry) {
+            console.log(`[Orchestrator] Architect Pass cache hit`);
+            try {
+                const result = JSON.parse(cachedEntry.response);
+                return result as RefinedGraph;
+            } catch (e) {
+                console.error('[Orchestrator] Failed to parse cached architect result', e);
+            }
+        }
+
+        console.log(`[Orchestrator] Starting Architect Pass with ${client.getModel()} (${skeletonJson.length} bytes)`);
+
+        const systemPrompt = `You are a Principal Software Architect. 
+Analyze the provided Codebase Structural Skeleton (JSON).
+Your goal is to infer high-level metadata that cannot be statically analyzed.
+
+For every relevant Node (Function/Class), infer:
+1. "purpose": A concise 1-sentence description of what it does.
+2. "impact_depth": Integer 1-10. 1=Local utility, 10=System core/critical path.
+3. "search_tags": Array of strings. Concepts/Business-logic terms (e.g., "auth", "payment", "user-flow").
+4. "fragility": "high", "medium", "low". specific logic that looks brittle or complex.
+
+Also identify "implicit_links":
+Dependencies that are not explicit imports (e.g., events, dynamic calls, framework configuration).
+
+Return a JSON object EXACTLY matching this interface:
+{
+  "nodes": {
+    "node_id_from_skeleton": {
+      "purpose": "...",
+      "impact_depth": 5,
+      "search_tags": ["tag1", "tag2"],
+      "fragility": "low"
+    }
+  },
+  "implicit_links": [
+    { "sourceId": "...", "targetId": "...", "reason": "..." }
+  ]
+}
+
+IMPORTANT:
+- Use the exact IDs provided in the skeleton if possible, or construct them as "filePath:name:line".
+- The input skeleton uses "startLine" which usually maps to the ID format.
+- Be consistent with ID generation.
+- Return ONLY VALID JSON.
+`;
+
+        const prompt = `Here is the Structural Skeleton of the codebase:\n\n\`\`\`json\n${skeletonJson}\n\`\`\``;
+
+        try {
+            const response = await client.complete(prompt, systemPrompt);
+            const content = response.content;
+
+            // Log thoughts if provided (Gemini 2.0/3.0 thinking feature)
+            if ((response as any).thought) {
+                console.log(`[Orchestrator] AI Architect Thought process:\n${(response as any).thought}`);
+            }
+
+            // Extract JSON
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+                throw new Error('No JSON found in Architect response');
+            }
+
+            const refinedGraph = JSON.parse(jsonMatch[0]) as RefinedGraph;
+
+            // Cache the result
+            this.db.setAICache(cacheKey, JSON.stringify(refinedGraph));
+
+            console.log(`[Orchestrator] Architect Pass completed in ${Math.round(performance.now() - methodStartTime)}ms`);
+
+            return refinedGraph;
+        } catch (error) {
+            console.error('[Orchestrator] Architect Pass failed:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Reflex Pass: Get instant insight for a node using Groq (Llama 3.1)
+     * Target latency < 200ms
+     */
+    async getNodeInsight(nodeMetadata: any, question: string): Promise<string> {
+        if (!this.groqClient) {
+            return "AI Insight unavailable (Groq key missing)";
+        }
+
+        const context = JSON.stringify({
+            name: nodeMetadata.name,
+            type: nodeMetadata.type,
+            purpose: nodeMetadata.purpose,
+            tags: nodeMetadata.search_tags,
+            fragility: nodeMetadata.fragility
+        });
+
+        const prompt = `Node Context: ${context}\n\nQuestion: ${question}\n\nAnswer concisely (under 20 words):`;
+        const systemPrompt = "You are a coding expert. Be extremely concise.";
+
+        try {
+            const response = await this.groqClient.complete(prompt, systemPrompt);
+            return response.content;
+        } catch (error) {
+            console.warn('[Orchestrator] Reflex pass failed:', error);
+            return "Insight generation failed.";
         }
     }
 }

@@ -16,6 +16,7 @@ import { AIOrchestrator, createOrchestrator } from '../ai';
 import { InspectorService } from './inspector-service';
 import * as path from 'path';
 import * as os from 'os';
+import * as fs from 'fs';
 
 class IndexWorker {
     private db: CodeIndexDatabase | null = null;
@@ -249,6 +250,10 @@ class IndexWorker {
                             model: 'groq'
                         }))
                         .catch(err => this.sendError(request.id, err.message));
+                    break;
+
+                case 'refine-graph':
+                    this.handleRefineGraph(request.id);
                     break;
 
                 default:
@@ -711,6 +716,125 @@ class IndexWorker {
         } catch (error) {
             this.sendError(request.id, `Failed to update AI config: ${(error as Error).message}`);
         }
+    }
+
+    /**
+     * Handle Refine Graph request (Architect Pass)
+     */
+    private async handleRefineGraph(id: string): Promise<void> {
+        if (!this.db || !this.orchestrator) {
+            this.sendError(id, 'Resource not initialized');
+            return;
+        }
+
+        try {
+            console.log('Worker: Starting graph refinement (Architect Pass)...');
+
+            // 1. Get all files and generate skeletons
+            const allFiles = this.db.getAllFiles();
+            const fullSkeleton: Record<string, any> = {};
+
+            for (const file of allFiles) {
+                try {
+                    const content = fs.readFileSync(file.filePath, 'utf-8');
+                    const language = this.getLanguage(file.filePath);
+                    if (language) {
+                        fullSkeleton[file.filePath] = this.parser.generateStructuralSkeleton(content, language);
+                    }
+                } catch (e) {
+                    console.error(`Worker: Failed to read file for skeleton: ${file.filePath}`, e);
+                }
+            }
+
+            // 2. Call AI Orchestrator
+            if (Object.keys(fullSkeleton).length === 0) {
+                this.sendError(id, 'No code files found in index. Please run "Index Workspace" first.');
+                return;
+            }
+
+            const refinedData = await this.orchestrator.refineSystemGraph(fullSkeleton);
+
+            // 3. Update Symbols in DB
+            const allSymbols = this.db.getAllSymbols();
+            const symbolsToUpdate: { id: number; metadata: any }[] = [];
+
+            // Result maps results back to symbols
+            // We need to match based on ID or filePath + name + line
+            for (const symbol of allSymbols) {
+                const key = `${symbol.filePath}:${symbol.name}:${symbol.rangeStartLine}`;
+                const metadata = refinedData.nodes[key];
+
+                if (metadata) {
+                    symbolsToUpdate.push({
+                        id: symbol.id,
+                        metadata: {
+                            purpose: metadata.purpose,
+                            impactDepth: metadata.impact_depth,
+                            searchTags: metadata.search_tags ? JSON.stringify(metadata.search_tags) : null,
+                            fragility: metadata.fragility
+                        }
+                    });
+                }
+            }
+
+            // Perform batch update (need to implement updateSymbolMetadata in database.ts)
+            if (symbolsToUpdate.length > 0) {
+                this.db.updateSymbolsMetadata(symbolsToUpdate);
+            }
+
+            // 4. Update Edges (Implicit links)
+            if (refinedData.implicit_links && refinedData.implicit_links.length > 0) {
+                console.log(`Worker: Resolving ${refinedData.implicit_links.length} implicit links...`);
+                const implicitEdges: any[] = [];
+
+                // Helper to resolve string ID to database ID
+                // We'll use the symbols already in the DB to match.
+                // For performance, we can build a lookup map of all current symbols.
+                const idMap = new Map<string, number>();
+                allSymbols.forEach(s => {
+                    const key = `${s.filePath}:${s.name}:${s.rangeStartLine}`;
+                    idMap.set(key, s.id);
+                });
+
+                for (const link of refinedData.implicit_links) {
+                    const sourceId = idMap.get(link.sourceId);
+                    const targetId = idMap.get(link.targetId);
+
+                    if (sourceId && targetId) {
+                        implicitEdges.push({
+                            sourceId,
+                            targetId,
+                            type: 'implicit',
+                            reason: link.reason
+                        });
+                    }
+                }
+
+                if (implicitEdges.length > 0) {
+                    console.log(`Worker: Inserting ${implicitEdges.length} resolved implicit links.`);
+                    this.db.insertEdges(implicitEdges);
+                }
+            }
+
+            this.sendMessage({
+                type: 'refine-graph-complete',
+                id,
+                refinedNodeCount: symbolsToUpdate.length,
+                implicitLinkCount: refinedData.implicit_links?.length || 0
+            });
+
+        } catch (error) {
+            console.error('Worker: Refine graph failed:', error);
+            this.sendError(id, `Refine graph failed: ${(error as Error).message}`);
+        }
+    }
+
+    private getLanguage(filePath: string): 'typescript' | 'python' | 'c' | null {
+        const ext = path.extname(filePath).toLowerCase();
+        if (ext === '.ts' || ext === '.tsx') return 'typescript';
+        if (ext === '.py') return 'python';
+        if (ext === '.c' || ext === '.h') return 'c';
+        return null;
     }
 
     /**

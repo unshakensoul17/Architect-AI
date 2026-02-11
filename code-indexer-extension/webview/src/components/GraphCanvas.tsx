@@ -36,6 +36,7 @@ interface GraphCanvasProps {
     graphData: GraphData | null;
     vscode: VSCodeAPI;
     onNodeClick?: (nodeId: string) => void;
+    searchQuery?: string;
 }
 
 const nodeTypes: NodeTypes = {
@@ -44,7 +45,7 @@ const nodeTypes: NodeTypes = {
     domainNode: DomainNode,
 };
 
-const GraphCanvas = memo(({ graphData, vscode, onNodeClick }: GraphCanvasProps) => {
+const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: GraphCanvasProps) => {
     const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
     const [allNodes, setAllNodes] = useState<Node[]>([]);
@@ -61,7 +62,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick }: GraphCanvasProps) 
         setRelatedNodeIds,
         impactStats,
         setImpactStats,
-    } = useViewMode(vscode);
+    } = useViewMode(vscode, searchQuery);
 
     // React Flow instance for focus engine
     const reactFlowInstance = useReactFlow();
@@ -257,6 +258,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick }: GraphCanvasProps) 
             relatedNodeIds,
             riskThresholds: DEFAULT_RISK_THRESHOLDS,
             executionFlows,
+            searchQuery,
         };
 
         const result = applyGraphFilter(allNodes, allEdges, context);
@@ -367,6 +369,23 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick }: GraphCanvasProps) 
         return undefined;
     }, [focusedNodeId, allNodes]);
 
+    // Memoize MiniMap nodeColor to prevent re-renders
+    const miniMapNodeColor = useCallback((node: Node) => {
+        if (node.type === 'domainNode') {
+            const data = node.data as DomainNodeData;
+            const status = data.health?.status || 'healthy';
+            return status === 'healthy'
+                ? '#10b981'
+                : status === 'warning'
+                    ? '#fbbf24'
+                    : '#ef4444';
+        }
+        if (node.type === 'fileNode') {
+            return '#3b82f6';
+        }
+        return (node.data as any).coupling?.color || '#6b7280';
+    }, []);
+
     if (!graphData) {
         return (
             <div className="flex items-center justify-center w-full h-full">
@@ -410,29 +429,22 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick }: GraphCanvasProps) 
                     fitView
                     minZoom={0.1}
                     maxZoom={2}
+                    nodesDraggable={false}
+                    nodesConnectable={false}
+                    elementsSelectable={false}
+                    onlyRenderVisibleElements={true}
+                    elevateEdgesOnSelect={false}
                     defaultEdgeOptions={{
-                        type: 'smoothstep',
+                        type: 'default',
                     }}
                 >
-                    <Background />
+                    <Background gap={20} />
                     <Controls />
                     <MiniMap
-                        nodeColor={(node) => {
-                            if (node.type === 'domainNode') {
-                                const data = node.data as DomainNodeData;
-                                const status = data.health?.status || 'healthy';
-                                return status === 'healthy'
-                                    ? '#10b981'
-                                    : status === 'warning'
-                                        ? '#fbbf24'
-                                        : '#ef4444';
-                            }
-                            if (node.type === 'fileNode') {
-                                return '#3b82f6';
-                            }
-                            return (node.data as any).coupling?.color || '#6b7280';
-                        }}
+                        nodeColor={miniMapNodeColor}
                         maskColor="rgba(0, 0, 0, 0.5)"
+                        pannable={false}
+                        zoomable={false}
                     />
                 </ReactFlow>
 

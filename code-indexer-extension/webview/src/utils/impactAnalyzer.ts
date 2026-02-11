@@ -24,13 +24,16 @@ export function analyzeImpact(
     // Compute downstream dependencies (what this calls)
     const downstream = computeDownstreamDeps(nodeId, outgoing);
 
+    // Index nodes by ID for O(1) lookup
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+
     // Count affected files and domains
     const affectedFiles = new Set<string>();
     const affectedDomains = new Set<string>();
 
     const allAffected = new Set([...upstream, ...downstream, nodeId]);
     allAffected.forEach((id) => {
-        const node = nodes.find((n) => n.id === id);
+        const node = nodeMap.get(id);
         if (node) {
             // Get file path
             const filePath = (node.data as any)?.filePath || node.parentId;
@@ -156,15 +159,21 @@ function extractDomain(nodeId: string, node: Node): string | null {
  * Calculate impact severity score (0-100)
  * Higher score = more severe impact
  */
-export function calculateImpactSeverity(stats: ImpactStats): number {
+export function calculateImpactSeverity(stats: ImpactStats, nodeData?: any): number {
     const functionWeight = 1;
     const fileWeight = 5;
     const domainWeight = 20;
 
-    const score =
+    // Use AI-inferred impact depth if available (1-10)
+    const aiImpactDepth = nodeData?.impactDepth || 1;
+    const depthMultiplier = aiImpactDepth / 5; // e.g., 10 -> 2x multiplier, 5 -> 1x
+
+    let score =
         stats.affectedFunctions * functionWeight +
         stats.affectedFiles * fileWeight +
         stats.affectedDomains * domainWeight;
+
+    score *= depthMultiplier;
 
     // Normalize to 0-100
     return Math.min(100, (score / 100) * 100);

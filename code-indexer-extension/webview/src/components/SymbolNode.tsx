@@ -67,7 +67,7 @@ const SymbolNode = memo(({ data }: NodeProps<Node<SymbolNodeData>>) => {
                 borderStyle: 'solid',
                 color: 'var(--vscode-editor-foreground)',
                 opacity: containerOpacity,
-                transition: 'all 0.3s ease',
+
                 boxShadow,
                 cursor: isClickable ? 'pointer' : 'default',
                 pointerEvents: isDimmed ? 'none' : 'auto',

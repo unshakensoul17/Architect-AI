@@ -60,6 +60,9 @@ export function getRelatedNodes(
         });
     }
 
+    // Build adjacency list for O(1) neighbor lookup
+    const { incoming, outgoing } = buildAdjacencyList(edges);
+
     // Find callers/callees via edges (with depth limit)
     const visited = new Set<string>();
     const queue: Array<{ id: string; currentDepth: number; direction: 'upstream' | 'downstream' }> = [
@@ -74,17 +77,19 @@ export function getRelatedNodes(
         if (visited.has(`${id}:${direction}`)) continue;
         visited.add(`${id}:${direction}`);
 
-        edges.forEach((edge) => {
-            if (direction === 'upstream' && edge.target === id) {
-                // Incoming edge: source calls this node
-                callers.add(edge.source);
-                queue.push({ id: edge.source, currentDepth: currentDepth + 1, direction });
-            } else if (direction === 'downstream' && edge.source === id) {
-                // Outgoing edge: this node calls target
-                callees.add(edge.target);
-                queue.push({ id: edge.target, currentDepth: currentDepth + 1, direction });
+        if (direction === 'upstream') {
+            const sources = incoming.get(id) || [];
+            for (const source of sources) {
+                callers.add(source);
+                queue.push({ id: source, currentDepth: currentDepth + 1, direction });
             }
-        });
+        } else {
+            const targets = outgoing.get(id) || [];
+            for (const target of targets) {
+                callees.add(target);
+                queue.push({ id: target, currentDepth: currentDepth + 1, direction });
+            }
+        }
     }
 
     // Combine all related nodes
@@ -127,6 +132,9 @@ export function getNodesAtDistance(
 ): Set<string> {
     if (hops <= 0) return new Set();
 
+    // Build adjacency list for O(1) neighbor lookup
+    const { incoming, outgoing } = buildAdjacencyList(edges);
+
     const result = new Set<string>();
     const visited = new Set<string>();
     const queue: Array<{ id: string; distance: number }> = [{ id: nodeId, distance: 0 }];
@@ -143,14 +151,18 @@ export function getNodesAtDistance(
         }
 
         if (distance < hops) {
-            edges.forEach((edge) => {
-                if ((direction === 'upstream' || direction === 'both') && edge.target === id) {
-                    queue.push({ id: edge.source, distance: distance + 1 });
+            if (direction === 'upstream' || direction === 'both') {
+                const sources = incoming.get(id) || [];
+                for (const source of sources) {
+                    queue.push({ id: source, distance: distance + 1 });
                 }
-                if ((direction === 'downstream' || direction === 'both') && edge.source === id) {
-                    queue.push({ id: edge.target, distance: distance + 1 });
+            }
+            if (direction === 'downstream' || direction === 'both') {
+                const targets = outgoing.get(id) || [];
+                for (const target of targets) {
+                    queue.push({ id: target, distance: distance + 1 });
                 }
-            });
+            }
         }
     }
 

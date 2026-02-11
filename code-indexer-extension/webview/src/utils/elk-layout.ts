@@ -93,12 +93,17 @@ export async function applyElkLayout(
     // Calculate layout
     const layoutedGraph = await elk.layout(elkGraph);
 
+    // Build lookup maps for O(1) access during position mapping
+    const domainMap = new Map(domainNodes.map(n => [n.id, n]));
+    const fileMap = new Map(fileNodes.map(n => [n.id, n]));
+    const symbolMap = new Map(symbolNodes.map(n => [n.id, n]));
+
     // Map positions back to React Flow nodes
     const layoutedNodes: Node[] = [];
 
     // Process domain nodes (top level)
     layoutedGraph.children?.forEach((domainElkNode) => {
-        const originalDomainNode = domainNodes.find((n) => n.id === domainElkNode.id);
+        const originalDomainNode = domainMap.get(domainElkNode.id);
         if (originalDomainNode) {
             layoutedNodes.push({
                 ...originalDomainNode,
@@ -116,7 +121,7 @@ export async function applyElkLayout(
 
         // Process file nodes (children of domains)
         domainElkNode.children?.forEach((fileElkNode) => {
-            const originalFileNode = fileNodes.find((n) => n.id === fileElkNode.id);
+            const originalFileNode = fileMap.get(fileElkNode.id);
             if (originalFileNode) {
                 layoutedNodes.push({
                     ...originalFileNode,
@@ -134,9 +139,7 @@ export async function applyElkLayout(
 
             // Process symbol nodes (children of files)
             fileElkNode.children?.forEach((symbolElkNode) => {
-                const originalSymbolNode = symbolNodes.find(
-                    (n) => n.id === symbolElkNode.id
-                );
+                const originalSymbolNode = symbolMap.get(symbolElkNode.id);
                 if (originalSymbolNode) {
                     layoutedNodes.push({
                         ...originalSymbolNode,

@@ -12,9 +12,10 @@ const vscode: VSCodeAPI = window.acquireVsCodeApi();
 
 function App() {
     const [graphData, setGraphData] = useState<GraphData | null>(null);
-    const [fps, setFps] = useState<number>(60);
     const [loading, setLoading] = useState(true);
     const [showInspector, setShowInspector] = useState(true);
+    const [searchQuery, setSearchQuery] = useState('');
+    const fpsRef = useRef<HTMLDivElement>(null);
 
     // Get stable action references from store
     const selectNode = useInspectorStore((s) => s.selectNode);
@@ -22,12 +23,19 @@ function App() {
     // Ref to track last clicked node to prevent duplicate updates
     const lastClickedNodeRef = useRef<string | null>(null);
 
-    // Performance monitoring
+    // Performance monitoring — use direct DOM mutation to avoid React re-renders
     useEffect(() => {
         const monitor = new PerformanceMonitor();
         monitor.start((currentFps) => {
-            setFps(currentFps);
+            if (fpsRef.current) {
+                fpsRef.current.textContent = `${currentFps} FPS`;
+                fpsRef.current.style.backgroundColor =
+                    currentFps >= 55 ? '#10b98150' : currentFps >= 30 ? '#fbbf2450' : '#ef444450';
+                fpsRef.current.style.color =
+                    currentFps >= 55 ? '#10b981' : currentFps >= 30 ? '#fbbf24' : '#ef4444';
+            }
         });
+        return () => monitor.stop();
     }, []);
 
     // Message handler from extension
@@ -150,6 +158,19 @@ function App() {
             >
                 <div className="flex items-center gap-4">
                     <h1 className="text-lg font-bold">Code Graph Visualization</h1>
+                    <input
+                        type="text"
+                        placeholder="Search symbols or AI tags..."
+                        className="px-2 py-1 text-sm rounded ml-4"
+                        style={{
+                            background: 'var(--vscode-input-background)',
+                            color: 'var(--vscode-input-foreground)',
+                            border: '1px solid var(--vscode-input-border)',
+                            minWidth: '250px',
+                        }}
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                    />
                     {graphData && (
                         <div className="text-xs opacity-70">
                             {graphData.domains.length} domains · {graphData.symbols.length} symbols ·{' '}
@@ -159,21 +180,17 @@ function App() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                    {/* FPS Counter */}
+                    {/* FPS Counter — uses ref for direct DOM updates */}
                     <div
+                        ref={fpsRef}
                         className="text-xs px-2 py-1 rounded"
                         style={{
-                            backgroundColor:
-                                fps >= 55
-                                    ? '#10b98150'
-                                    : fps >= 30
-                                        ? '#fbbf2450'
-                                        : '#ef444450',
-                            color: fps >= 55 ? '#10b981' : fps >= 30 ? '#fbbf24' : '#ef4444',
+                            backgroundColor: '#10b98150',
+                            color: '#10b981',
                         }}
                         title="Frames per second"
                     >
-                        {fps} FPS
+                        60 FPS
                     </div>
 
                     {/* Inspector Toggle */}
@@ -240,6 +257,7 @@ function App() {
                                 graphData={graphData}
                                 vscode={vscode}
                                 onNodeClick={handleNodeClick}
+                                searchQuery={searchQuery}
                             />
                         </ReactFlowProvider>
                     )}

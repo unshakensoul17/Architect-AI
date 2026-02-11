@@ -23,6 +23,10 @@ export const symbols = sqliteTable('symbols', {
     rangeEndColumn: integer('range_end_column').notNull(),
     complexity: integer('complexity').notNull().default(0),
     domain: text('domain'), // Domain classification (auth, payment, api, etc.)
+    purpose: text('purpose'), // AI-inferred purpose
+    impactDepth: integer('impact_depth'), // AI-inferred impact depth
+    searchTags: text('search_tags'), // AI-inferred search tags (JSON)
+    fragility: text('fragility'), // AI-inferred fragility
 });
 
 /**
@@ -39,6 +43,7 @@ export const edges = sqliteTable('edges', {
         .notNull()
         .references(() => symbols.id, { onDelete: 'cascade' }),
     type: text('type').notNull(), // import, call, inherit, implement
+    reason: text('reason'), // Reason for implicit dependencies
 });
 
 /**

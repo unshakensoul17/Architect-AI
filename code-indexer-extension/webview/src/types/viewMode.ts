@@ -101,6 +101,7 @@ export interface FilterContext {
     relatedNodeIds: Set<string>;
     riskThresholds: RiskThresholds;
     executionFlows?: ExecutionFlow[];
+    searchQuery?: string;
 }
 
 // Layout configuration per mode

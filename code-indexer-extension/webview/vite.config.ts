@@ -7,6 +7,9 @@ export default defineConfig({
     build: {
         outDir: '../dist/webview',
         emptyOutDir: true,
+        cssMinify: true,
+        minify: 'esbuild',
+        target: 'es2020',
         rollupOptions: {
             output: {
                 entryFileNames: 'index.js',
@@ -17,6 +20,10 @@ export default defineConfig({
         },
         // Minify for production
         sourcemap: true,
+    },
+    esbuild: {
+        // Drop console.log in production for performance
+        drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
     },
     resolve: {
         alias: {

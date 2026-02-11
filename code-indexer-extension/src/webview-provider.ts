@@ -95,6 +95,12 @@ export class GraphWebviewProvider {
         await this.sendGraphData();
     }
 
+    public async refresh() {
+        if (this.panel) {
+            await this.sendGraphData();
+        }
+    }
+
     private async sendGraphData() {
         if (!this.panel) {
             return;

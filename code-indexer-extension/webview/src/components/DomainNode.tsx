@@ -92,7 +92,7 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
                 padding: 0,
                 boxShadow,
                 opacity: containerOpacity,
-                transition: 'opacity 0.3s ease, box-shadow 0.3s ease, border-width 0.2s ease',
+
                 cursor: isClickable ? 'pointer' : 'default',
                 pointerEvents: isDimmed ? 'none' : 'auto',
             }}

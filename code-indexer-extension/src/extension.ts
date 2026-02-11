@@ -111,6 +111,12 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('codeIndexer.refineGraph', async () => {
+            await refineGraph();
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('codeIndexer.configureAI', async () => {
             await configureAI();
         })
@@ -380,6 +386,58 @@ async function visualizeGraph() {
 }
 
 /**
+ * Run AI Architect Pass to refine the graph
+ */
+async function refineGraph() {
+    if (!workerManager) {
+        vscode.window.showErrorMessage('Worker not initialized');
+        return;
+    }
+
+    const config = vscode.workspace.getConfiguration('codeIndexer');
+    const vertexProject = config.get<string>('vertexProject');
+    const geminiApiKey = config.get<string>('geminiApiKey');
+
+    if (!vertexProject && !geminiApiKey) {
+        const result = await vscode.window.showErrorMessage(
+            'Neither Vertex AI nor Gemini API Key is configured. Please set one up first.',
+            'Configure AI'
+        );
+        if (result === 'Configure AI') {
+            vscode.commands.executeCommand('codeIndexer.configureAI');
+        }
+        return;
+    }
+
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Refining graph with AI...',
+            cancellable: false,
+        },
+        async (progress) => {
+            try {
+                const result = await workerManager!.refineGraph();
+                vscode.window.showInformationMessage(
+                    `Graph refined: ${result.refinedNodeCount} nodes updated with AI insights.`
+                );
+                outputChannel.appendLine(
+                    `Architect Pass complete: ${result.refinedNodeCount} nodes refined, ${result.implicitLinkCount} implicit links found.`
+                );
+
+                // Refresh webview if open
+                if (graphWebviewProvider) {
+                    graphWebviewProvider.refresh();
+                }
+            } catch (error) {
+                vscode.window.showErrorMessage(`Refinement failed: ${error}`);
+                outputChannel.appendLine(`Refinement failed: ${error}`);
+            }
+        }
+    );
+}
+
+/**
  * Toggle file watcher command
  */
 async function toggleFileWatcher() {
@@ -423,11 +481,13 @@ async function updateWorkerConfig() {
     const config = vscode.workspace.getConfiguration('codeIndexer');
     const vertexProject = config.get<string>('vertexProject');
     const groqApiKey = config.get<string>('groqApiKey');
+    const geminiApiKey = config.get<string>('geminiApiKey');
 
     try {
         await workerManager.configureAI({
             vertexProject,
-            groqApiKey
+            groqApiKey,
+            geminiApiKey
         });
         outputChannel.appendLine('AI configuration updated');
     } catch (error) {
@@ -467,6 +527,21 @@ async function configureAI() {
     if (vertexProject !== undefined) {
         await config.update('vertexProject', vertexProject, vscode.ConfigurationTarget.Global);
         vscode.window.showInformationMessage('Vertex Project ID updated successfully.');
+    }
+
+    // 3. Get Gemini API Key
+    const currentGeminiKey = config.get<string>('geminiApiKey') || '';
+    const geminiKey = await vscode.window.showInputBox({
+        title: 'Configure Gemini API Key',
+        prompt: 'Enter your Google Gemini API Key (Alternative to Vertex AI)',
+        value: currentGeminiKey,
+        password: true,
+        placeHolder: 'AIza...'
+    });
+
+    if (geminiKey !== undefined) {
+        await config.update('geminiApiKey', geminiKey, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage('Gemini API Key updated successfully.');
     }
 
     // Explicitly trigger worker update (though onDidChangeConfiguration should handle it)

@@ -12,6 +12,11 @@ export interface GraphSymbol {
     };
     complexity: number;
     domain?: string | null;
+    // AI Metadata
+    purpose?: string;
+    impactDepth?: number;
+    searchTags?: string[];
+    fragility?: string;
 }
 
 export interface GraphEdge {
@@ -19,6 +24,7 @@ export interface GraphEdge {
     source: string; // Format: "filePath:symbolName:line"
     target: string;
     type: 'call' | 'import' | 'extends' | 'implements';
+    reason?: string;
 }
 
 export interface GraphFile {

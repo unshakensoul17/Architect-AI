@@ -33,16 +33,24 @@ body {
 
 .react-flow__node {
   font-size: 12px;
+  contain: layout style;
+  will-change: transform;
 }
 
 .react-flow__edge-path {
   stroke: var(--vscode-editorLineNumber-foreground, #858585);
   stroke-width: 1.5px;
+  will-change: transform;
 }
 
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: var(--vscode-focusBorder, #007acc);
   stroke-width: 2px;
+}
+
+/* Reduce paint area for off-screen content */
+.react-flow__renderer {
+  contain: strict;
 }
 
 .react-flow__controls {
@@ -64,3 +72,4 @@ body {
   background-color: var(--vscode-sideBar-background, #252526);
   border: 1px solid var(--vscode-panel-border, #3c3c3c);
 }
+

@@ -52,7 +52,7 @@ const FileNode = memo(({ data }: NodeProps<Node<FileNodeData>>) => {
                 borderStyle: 'solid',
                 width: '100%',
                 height: '100%',
-                transition: 'all 0.3s ease',
+
                 opacity: containerOpacity,
                 boxShadow,
                 cursor: isClickable ? 'pointer' : 'default',
