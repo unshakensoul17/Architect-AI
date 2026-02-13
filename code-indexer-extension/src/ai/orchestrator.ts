@@ -594,73 +594,82 @@ Choose the most appropriate domain based on the symbol's purpose and context.`;
         console.log(`[Orchestrator] Starting Architect Pass with ${client.getModel()} (${skeletonJson.length} bytes)`);
 
         const systemPrompt = `You are a Principal Software Architect. 
-Analyze the provided Codebase Structural Skeleton (JSON).
-Your goal is to infer high-level metadata that cannot be statically analyzed.
+Analyze the provided Codebase Structural Skeleton. 
 
-For every relevant Node (Function/Class), infer:
-1. "purpose": A concise 1-sentence description of what it does.
-2. "impact_depth": Integer 1-10. 1=Local utility, 10=System core/critical path.
-3. "search_tags": Array of strings. Concepts/Business-logic terms (e.g., "auth", "payment", "user-flow").
-4. "fragility": "high", "medium", "low". specific logic that looks brittle or complex.
-5. "risk_score": Integer 0-100. How risky is this code? 0=Safe, 100=Critical failure point.
-6. "risk_reason": String. A concise explanation of why this code is risky (e.g., "If this function fails, the entire Auth flow stops").
+MANDATORY RULES:
+1. FOCUS ONLY on Functions and Classes. 
+2. IGNORE variables, types, and interfaces unless they are central to the system flow.
+3. FOR EVERY NODE INCLUDED: You must provide a non-null 'purpose' (minimum 10 words), 'impact_depth', 'search_tags', 'fragility', 'risk_score', and 'risk_reason'.
+4. If a node's purpose is unclear from the name, infer it from the File Path and its 'Imports'.
+5. NEVER return a null field. If context is limited, use architectural inference based on the naming convention and folder path.
 
-Also identify "implicit_links":
-Dependencies that are not explicit imports (e.g., events, dynamic calls, framework configuration).
-
-Return a JSON object EXACTLY matching this interface:
+Return a JSON object:
 {
   "nodes": {
-    "node_id_from_skeleton": {
-      "purpose": "...",
-      "impact_depth": 5,
-      "search_tags": ["tag1", "tag2"],
-      "fragility": "low",
-      "risk_score": 35,
-      "risk_reason": "..."
+    "node_id": {
+      "purpose": "A technical description of exactly what this class/function achieves.",
+      "impact_depth": 1-10,
+      "search_tags": ["business-logic-term"],
+      "fragility": "low|medium|high",
+      "risk_score": 0-100,
+      "risk_reason": "Specific architectural threat or failure impact."
     }
-  },
-  "implicit_links": [
-    { "sourceId": "...", "targetId": "...", "reason": "..." }
-  ]
+  }
 }
-
-IMPORTANT:
-- Use the exact IDs provided in the skeleton if possible, or construct them as "filePath:name:line".
-- The input skeleton uses "startLine" which usually maps to the ID format.
-- Be consistent with ID generation.
-- Return ONLY VALID JSON.
 `;
 
-        const prompt = `Here is the Structural Skeleton of the codebase:\n\n\`\`\`json\n${skeletonJson}\n\`\`\``;
+        const entries = Object.entries(skeleton);
+        const BATCH_SIZE = 40;
+        const totalBatches = Math.ceil(entries.length / BATCH_SIZE);
+        const finalRefinedMetadata: Record<string, RefinedNodeData> = {};
 
-        try {
-            const response = await client.complete(prompt, systemPrompt);
-            const content = response.content;
+        console.log(`[Orchestrator] Starting Architect Pass for ${entries.length} nodes in ${totalBatches} batches`);
 
-            // Log thoughts if provided (Gemini 2.0/3.0 thinking feature)
-            if ((response as any).thought) {
-                console.log(`[Orchestrator] AI Architect Thought process:\n${(response as any).thought}`);
+        for (let i = 0; i < totalBatches; i++) {
+            const start = i * BATCH_SIZE;
+            const end = Math.min(start + BATCH_SIZE, entries.length);
+            const batch = Object.fromEntries(entries.slice(start, end));
+
+            console.log(`[Orchestrator] Processing batch ${i + 1}/${totalBatches} (${end - start} nodes)`);
+
+            const batchJson = JSON.stringify(batch, null, 2);
+            const batchPrompt = `Analyze this batch of the Codebase Structural Skeleton:\n\n\`\`\`json\n${batchJson}\n\`\`\``;
+
+            try {
+                const response = await client.complete(batchPrompt, systemPrompt);
+                const content = response.content;
+
+                // Extract JSON
+                const jsonMatch = content.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    const batchResult = JSON.parse(jsonMatch[0]);
+                    if (batchResult.nodes) {
+                        Object.assign(finalRefinedMetadata, batchResult.nodes);
+                        console.log(`[Orchestrator] Batch ${i + 1} refined ${Object.keys(batchResult.nodes).length} nodes`);
+                    }
+                }
+
+                // Rate limiting protection
+                if (i < totalBatches - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+            } catch (error) {
+                console.error(`[Orchestrator] Batch ${i + 1} failed:`, error);
+                // Continue with next batch instead of failing everything
             }
-
-            // Extract JSON
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                throw new Error('No JSON found in Architect response');
-            }
-
-            const refinedGraph = JSON.parse(jsonMatch[0]) as RefinedGraph;
-
-            // Cache the result
-            this.db.setAICache(cacheKey, JSON.stringify(refinedGraph));
-
-            console.log(`[Orchestrator] Architect Pass completed in ${Math.round(performance.now() - methodStartTime)}ms`);
-
-            return refinedGraph;
-        } catch (error) {
-            console.error('[Orchestrator] Architect Pass failed:', error);
-            throw error;
         }
+
+        const refinedGraph: RefinedGraph = {
+            nodes: finalRefinedMetadata,
+            implicit_links: [] // Implicit links are harder to batch accurately, focus on nodes for now
+        };
+
+        // Cache the full result
+        this.db.setAICache(cacheKey, JSON.stringify(refinedGraph));
+
+        console.log(`[Orchestrator] Architect Pass completed in ${Math.round(performance.now() - methodStartTime)}ms. Total nodes: ${Object.keys(finalRefinedMetadata).length}`);
+
+        return refinedGraph;
     }
 
     /**

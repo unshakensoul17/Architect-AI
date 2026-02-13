@@ -49,6 +49,7 @@ const nodeTypes: NodeTypes = {
 const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: GraphCanvasProps) => {
     const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+    const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const [allNodes, setAllNodes] = useState<Node[]>([]);
     const [allEdges, setAllEdges] = useState<Edge[]>([]);
     const [isLayouting, setIsLayouting] = useState(false);
@@ -407,6 +408,38 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         return () => clearTimeout(layoutTimer);
     }, [visibleNodes, visibleEdges, currentMode, setNodes, setEdges]);
 
+    // Highlight edges on hover
+    const interactiveEdges = useMemo(() => {
+        if (!hoveredNodeId) return edges;
+
+        return edges.map((edge) => {
+            const isConnected = edge.source === hoveredNodeId || edge.target === hoveredNodeId;
+            if (isConnected) {
+                return {
+                    ...edge,
+                    style: {
+                        ...edge.style,
+                        opacity: 1.0,
+                        strokeWidth: 3,
+                        strokeDasharray: '0', // Make solid for better focus
+                    },
+                    markerEnd: {
+                        ...(edge.markerEnd as any),
+                        width: 25,
+                        height: 25,
+                    }
+                };
+            }
+            return {
+                ...edge,
+                style: {
+                    ...edge.style,
+                    opacity: 0.1, // Dim other edges even more
+                }
+            };
+        });
+    }, [edges, hoveredNodeId]);
+
     // Fit view only once when nodes first load (prevents blinking)
     useEffect(() => {
         if (nodes.length > 0 && !hasInitialFit && !isLayouting) {
@@ -418,6 +451,15 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             return () => clearTimeout(fitTimer);
         }
     }, [nodes, hasInitialFit, isLayouting, reactFlowInstance]);
+
+    // Handle node hover
+    const handleNodeMouseEnter = useCallback((_event: React.MouseEvent, node: Node) => {
+        setHoveredNodeId(node.id);
+    }, []);
+
+    const handleNodeMouseLeave = useCallback(() => {
+        setHoveredNodeId(null);
+    }, []);
 
     // Handle node click based on view mode
     const handleNodeClick = useCallback(
@@ -519,10 +561,12 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             <div style={{ flex: 1, position: 'relative' }}>
                 <ReactFlow
                     nodes={nodes}
-                    edges={edges}
+                    edges={interactiveEdges}
                     onNodesChange={onNodesChange}
                     onEdgesChange={onEdgesChange}
                     onNodeClick={handleNodeClick}
+                    onNodeMouseEnter={handleNodeMouseEnter}
+                    onNodeMouseLeave={handleNodeMouseLeave}
                     nodeTypes={nodeTypes}
                     minZoom={0.1}
                     maxZoom={2}

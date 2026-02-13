@@ -215,7 +215,7 @@ export class TreeSitterParser {
                         let innerContainer: SkeletonNode[] | null = null;
 
                         // Identify type
-                        if (['function_declaration', 'method_definition', 'class_declaration', 'interface_declaration', 'enum_declaration'].includes(n.type)) {
+                        if (['function_declaration', 'method_definition', 'class_declaration'].includes(n.type)) {
                             type = n.type.replace('_declaration', '').replace('_definition', '');
                             name = getIdentifier(n) || 'anonymous';
                         }
@@ -239,7 +239,9 @@ export class TreeSitterParser {
                             return;
                         }
 
-                        if (type) {
+                        // PRUNING: Only include high-value logic nodes
+                        // This reduces token usage significantly for large codebases
+                        if (type && ['function', 'class', 'method'].includes(type)) {
                             const newNode: SkeletonNode = {
                                 type,
                                 name,

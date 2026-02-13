@@ -98,7 +98,7 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
             }}
             className={isClickable ? 'hover:ring-2 hover:ring-blue-400' : ''}
         >
-            <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+            <Handle type="target" position={Position.Top} className="w-4 h-4" style={{ background: colors.border }} />
 
             {/* Header */}
             <div
@@ -238,7 +238,7 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
                 </div>
             )}
 
-            <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+            <Handle type="source" position={Position.Bottom} className="w-4 h-4" style={{ background: colors.border }} />
         </div>
     );
 });

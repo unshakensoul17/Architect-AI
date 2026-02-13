@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { Node, Edge } from '@xyflow/react';
+import { type Node, type Edge, MarkerType } from '@xyflow/react';
 import type {
     FilterContext,
     NodeVisibilityState,
@@ -11,6 +11,42 @@ import type { DomainNodeData, SymbolNodeData } from '../types';
  * Graph Filtering Engine
  * Central filtering system for all view modes
  */
+
+const DOMAIN_COLORS: Record<string, string> = {
+    auth: '#3b82f6',         // Blue
+    payment: '#10b981',      // Emerald
+    api: '#8b5cf6',          // Violet
+    database: '#f59e0b',     // Amber
+    notification: '#ec4899', // Pink
+    core: '#6366f1',         // Indigo
+    ui: '#f43f5e',           // Rose
+    util: '#14b8a6',         // Teal
+    test: '#84cc16',         // Lime
+    config: '#71717a',       // Zinc
+    unknown: '#94a3b8',      // Slate
+};
+
+const getDomainColor = (domain?: string) => {
+    if (!domain) return DOMAIN_COLORS.unknown;
+    return DOMAIN_COLORS[domain.toLowerCase()] || DOMAIN_COLORS.unknown;
+};
+
+const DEFAULT_EDGE_STYLE = (targetDomain?: string) => ({
+    type: 'straight',
+    animated: false,
+    style: {
+        stroke: getDomainColor(targetDomain),
+        strokeWidth: 1,
+        opacity: 0.4,
+        strokeDasharray: '5,5',
+    },
+    markerEnd: {
+        type: MarkerType.ArrowClosed,
+        width: 15,
+        height: 15,
+        color: getDomainColor(targetDomain),
+    },
+});
 
 interface FilteredGraph {
     visibleNodes: Node[];
@@ -97,19 +133,21 @@ function filterSearchMode(
     const visibleEdges = allEdges.map((edge) => {
         const sourceNode = nodeMap.get(edge.source);
         const targetNode = nodeMap.get(edge.target);
+        const targetDomain = (targetNode?.data as any)?.domain;
         const sourceMatch = (sourceNode?.data as any)?.isHighlighted;
         const targetMatch = (targetNode?.data as any)?.isHighlighted;
 
         const isVisible = sourceMatch && targetMatch;
+        const baseStyle = DEFAULT_EDGE_STYLE(targetDomain);
         const targetOpacity = isVisible ? 1.0 : 0.1;
-
-        if (edge.style?.opacity === targetOpacity) return edge;
 
         return {
             ...edge,
+            ...baseStyle,
             style: {
-                ...edge.style,
+                ...baseStyle.style,
                 opacity: targetOpacity,
+                strokeWidth: isVisible ? 2 : 1,
             }
         };
     });
@@ -155,9 +193,20 @@ function filterArchitectureMode(
 
     // Filter edges: Only between visible nodes
     const visibleNodeIds = new Set(visibleNodes.map((n) => n.id));
-    const visibleEdges = allEdges.filter(
-        (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)
-    );
+    const nodeMap = new Map(allNodes.map(n => [n.id, n]));
+
+    const visibleEdges = allEdges
+        .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
+        .map(edge => {
+            const targetNode = nodeMap.get(edge.target);
+            const targetDomain = (targetNode?.data as any)?.domain;
+            const baseStyle = DEFAULT_EDGE_STYLE(targetDomain);
+
+            return {
+                ...edge,
+                ...baseStyle,
+            };
+        });
 
     return { visibleNodes, visibleEdges };
 }
@@ -218,29 +267,29 @@ function filterFlowMode(
     });
 
     // Only clone edges that need changes
+    const nodeMap = new Map(allNodes.map(n => [n.id, n]));
     const visibleEdges = allEdges.map((edge) => {
         const isOnPath = pathEdges.has(`${edge.source}->${edge.target}`);
-        const currentOpacity = edge.style?.opacity;
-        const currentAnimated = edge.animated;
-        const currentStrokeWidth = edge.style?.strokeWidth;
-        const targetOpacity = isOnPath ? 1.0 : 0.15;
-        const targetStrokeWidth = isOnPath ? 3 : 1;
+        const targetNode = nodeMap.get(edge.target);
+        const targetDomain = (targetNode?.data as any)?.domain;
+        const baseStyle = DEFAULT_EDGE_STYLE(targetDomain);
 
-        // Skip cloning if state hasn't changed (check all properties)
-        if (currentOpacity === targetOpacity &&
-            currentAnimated === isOnPath &&
-            currentStrokeWidth === targetStrokeWidth) {
-            return edge;
-        }
+        const targetOpacity = isOnPath ? 1.0 : 0.15;
+        const targetStrokeWidth = isOnPath ? 2.5 : 1;
 
         return {
             ...edge,
+            ...baseStyle,
             style: {
-                ...edge.style,
-                strokeWidth: isOnPath ? 3 : 1,
-                opacity: isOnPath ? 1.0 : 0.15,
+                ...baseStyle.style,
+                strokeWidth: targetStrokeWidth,
+                opacity: targetOpacity,
             },
-            animated: isOnPath,
+            markerEnd: {
+                ...baseStyle.markerEnd,
+                width: isOnPath ? 20 : 15,
+                height: isOnPath ? 20 : 15,
+            }
         };
     });
 
@@ -303,17 +352,18 @@ function filterRiskMode(
     });
 
     // Only clone edges if opacity needs to change
+    const nodeMap = new Map(allNodes.map(n => [n.id, n]));
     const visibleEdges = allEdges.map((edge) => {
-        const currentOpacity = edge.style?.opacity;
-        if (currentOpacity === 0.4) {
-            return edge;
-        }
+        const targetNode = nodeMap.get(edge.target);
+        const targetDomain = (targetNode?.data as any)?.domain;
+        const baseStyle = DEFAULT_EDGE_STYLE(targetDomain);
 
         return {
             ...edge,
+            ...baseStyle,
             style: {
-                ...edge.style,
-                opacity: 0.4,
+                ...baseStyle.style,
+                opacity: 0.3,
             },
         };
     });
@@ -411,6 +461,7 @@ function filterImpactMode(
     });
 
     // Label edges with impact direction
+    const nodeMap = new Map(allNodes.map(n => [n.id, n]));
     const visibleEdges = allEdges.map((edge) => {
         const isImpactEdge =
             (edge.source === focusedNodeId && relatedNodeIds.has(edge.target)) ||
@@ -425,23 +476,27 @@ function filterImpactMode(
             }
         }
 
-        const targetOpacity = isImpactEdge ? 1.0 : 0.15;
-        const currentOpacity = edge.style?.opacity;
-        const currentLabel = edge.label;
+        const targetNode = nodeMap.get(edge.target);
+        const targetDomain = (targetNode?.data as any)?.domain;
+        const baseStyle = DEFAULT_EDGE_STYLE(targetDomain);
 
-        // Skip cloning if state hasn't changed
-        if (currentOpacity === targetOpacity && currentLabel === label) {
-            return edge;
-        }
+        const targetOpacity = isImpactEdge ? 1.0 : 0.15;
+        const targetStrokeWidth = isImpactEdge ? 2.5 : 1;
 
         return {
             ...edge,
+            ...baseStyle,
             label,
             style: {
-                ...edge.style,
-                strokeWidth: isImpactEdge ? 2.5 : 1,
+                ...baseStyle.style,
+                strokeWidth: targetStrokeWidth,
                 opacity: targetOpacity,
             },
+            markerEnd: {
+                ...baseStyle.markerEnd,
+                width: isImpactEdge ? 20 : 15,
+                height: isImpactEdge ? 20 : 15,
+            }
         };
     });
 
