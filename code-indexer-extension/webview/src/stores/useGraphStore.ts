@@ -6,12 +6,16 @@ interface GraphState {
     displayedGraphData: GraphData | null;
     filterPath: string | null;
     isLoading: boolean;
+    collapsedNodes: Set<string>;
 
     // Actions
     setGraphData: (data: GraphData) => void;
     filterByDirectory: (path: string) => void;
     clearFilter: () => void;
     setLoading: (loading: boolean) => void;
+    toggleNodeCollapse: (nodeId: string) => void;
+    collapseAll: () => void;
+    expandAll: () => void;
 }
 
 export const useGraphStore = create<GraphState>((set, get) => ({
@@ -19,13 +23,21 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     displayedGraphData: null,
     filterPath: null,
     isLoading: false,
+    collapsedNodes: new Set<string>(),
 
     setGraphData: (data) => {
+        // By default, collapse all domain nodes to provide a high-level view
+        const initialCollapsed = new Set<string>();
+        data.domains.forEach(d => {
+            initialCollapsed.add(`domain:${d.domain}`);
+        });
+
         set({
             originalGraphData: data,
             displayedGraphData: data,
             filterPath: null,
-            isLoading: false
+            isLoading: false,
+            collapsedNodes: initialCollapsed
         });
     },
 
@@ -129,5 +141,37 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         }
     },
 
-    setLoading: (loading) => set({ isLoading: loading })
+    setLoading: (loading) => set({ isLoading: loading }),
+
+    toggleNodeCollapse: (nodeId: string) => {
+        set((state) => {
+            const newCollapsed = new Set(state.collapsedNodes);
+            if (newCollapsed.has(nodeId)) {
+                newCollapsed.delete(nodeId);
+            } else {
+                newCollapsed.add(nodeId);
+            }
+            return { collapsedNodes: newCollapsed } as Partial<GraphState>;
+        });
+    },
+
+    collapseAll: () => {
+        const { displayedGraphData } = get();
+        if (!displayedGraphData) return;
+
+        const allCollapsed = new Set<string>();
+        // Collapse Domains
+        displayedGraphData.domains.forEach(d => allCollapsed.add(`domain:${d.domain}`));
+        // Collapse Files (optional, but good for consistency)
+        displayedGraphData.files.forEach(f => {
+            const domain = displayedGraphData.symbols.find(s => s.filePath === f.filePath)?.domain || 'unknown';
+            allCollapsed.add(`${domain}:${f.filePath}`);
+        });
+
+        set({ collapsedNodes: allCollapsed } as Partial<GraphState>);
+    },
+
+    expandAll: () => {
+        set({ collapsedNodes: new Set<string>() } as Partial<GraphState>);
+    }
 }));

@@ -22,6 +22,7 @@ import type { GraphData, DomainNodeData, FileNodeData, SymbolNodeData, VSCodeAPI
 import type { ViewMode, FilterContext } from '../types/viewMode';
 import { DEFAULT_RISK_THRESHOLDS } from '../types/viewMode';
 import { useViewMode } from '../hooks/useViewMode';
+import { useGraphStore } from '../stores/useGraphStore';
 import { useFocusEngine } from '../hooks/useFocusEngine';
 import { calculateCouplingMetrics } from '../utils/metrics';
 import { applyElkLayout, clearLayoutCache } from '../utils/elk-layout';
@@ -64,6 +65,9 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         setImpactStats,
     } = useViewMode(vscode, searchQuery);
 
+    // Graph Store
+    const { collapsedNodes, toggleNodeCollapse } = useGraphStore();
+
     // React Flow instance for focus engine
     const reactFlowInstance = useReactFlow();
     const { focusNode, clearFocus } = useFocusEngine(reactFlowInstance);
@@ -89,16 +93,22 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             const metrics = calculateCouplingMetrics(graphData);
 
             // Create domain nodes (top level)
-            const domainNodes: Node[] = graphData.domains.map((domainData) => ({
-                id: `domain:${domainData.domain}`,
-                type: 'domainNode',
-                position: { x: 0, y: 0 },
-                data: {
-                    domain: domainData.domain,
-                    health: domainData.health,
-                    collapsed: false,
-                } as DomainNodeData,
-            }));
+            const domainNodes: Node[] = graphData.domains.map((domainData) => {
+                const nodeId = `domain:${domainData.domain}`;
+                const isCollapsed = collapsedNodes.has(nodeId);
+
+                return {
+                    id: nodeId,
+                    type: 'domainNode',
+                    position: { x: 0, y: 0 },
+                    data: {
+                        domain: domainData.domain,
+                        health: domainData.health,
+                        collapsed: isCollapsed,
+                        onToggleCollapse: () => toggleNodeCollapse(nodeId),
+                    } as DomainNodeData,
+                };
+            });
 
             // Group symbols by domain and file
             const symbolsByDomain = new Map<string, Map<string, typeof graphData.symbols>>();
@@ -119,6 +129,14 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             const symbolNodes: Node[] = [];
 
             for (const [domain, fileMap] of symbolsByDomain) {
+                // If domain is collapsed, skip processing children for layout/visibility
+                // We will rely on React Flow or ELK layout to handle hiding? 
+                // Actually, if we remove them from `nodes`, they won't render.
+                // However, ELK needs to know about them if we want to "keep them inside" but hidden?
+                // No, usually we remove them from the graph.
+                const domainNodeId = `domain:${domain}`;
+                if (collapsedNodes.has(domainNodeId)) continue;
+
                 for (const [filePath, symbols] of fileMap) {
                     const fileCouplings = symbols
                         .map((s) => {
@@ -134,6 +152,8 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
 
                     // Create file node as child of domain
                     const fileNodeId = `${domain}:${filePath}`;
+                    const isFileCollapsed = collapsedNodes.has(fileNodeId);
+
                     fileNodes.push({
                         id: fileNodeId,
                         type: 'fileNode',
@@ -142,11 +162,15 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                             filePath,
                             symbolCount: symbols.length,
                             avgCoupling,
-                            collapsed: false,
+                            collapsed: isFileCollapsed,
+                            onToggleCollapse: () => toggleNodeCollapse(fileNodeId),
                         } as FileNodeData,
-                        parentId: `domain:${domain}`,
+                        parentId: domainNodeId,
                         extent: 'parent',
                     });
+
+                    // If file is collapsed, skip symbols
+                    if (isFileCollapsed) continue;
 
                     // Create symbol nodes as children of file nodes
                     symbols.forEach((symbol) => {
@@ -180,25 +204,88 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             }
 
             // Create edges
-            const rawEdges: Edge[] = graphData.edges.map((edge, index) => ({
-                id: `edge-${index}`,
-                source: edge.source,
-                target: edge.target,
-                type: 'smoothstep',
-                animated: edge.type === 'call',
-                style: {
-                    stroke:
-                        edge.type === 'call'
-                            ? '#3b82f6'
-                            : edge.type === 'import'
-                                ? '#10b981'
-                                : '#6b7280',
-                    strokeWidth: 1.5,
-                },
-            }));
+            // We need to filter edges to only include those where both source and target are visible
+            // OR if a parent is collapsed, redirect edges to the parent.
+            // Simplified approach: Only show edges between visible nodes.
+            // Advanced approach (Edge Bundling to Cluster): Redirect edge to parent.
+
+            // Let's implement redirection logic.
+            const visibleNodeIds = new Set([
+                ...domainNodes.map(n => n.id),
+                ...fileNodes.map(n => n.id),
+                ...symbolNodes.map(n => n.id)
+            ]);
+
+            // Helper to get effective node ID (itself or its visible parent)
+            // This maps a potentially hidden node to its visible ancestor
+            // Map: [Symbol ID] -> [File ID] (if file collapsed) -> [Domain ID] (if domain collapsed)
+            // But wait, `visibleNodeIds` only contains expanded nodes.
+            // We need a map of ALL nodes to their visible representative.
+
+            // Build a map of all symbols/files to their visible ancestor.
+            const nodeRedirection = new Map<string, string>();
+
+            // We iterate over the original data structure again? 
+            // Or just use the known structure.
+            graphData.symbols.forEach(symbol => {
+                const symbolId = `${symbol.filePath}:${symbol.name}:${symbol.range.startLine}`;
+                const domainId = `domain:${symbol.domain || 'unknown'}`;
+                const fileId = `${symbol.domain || 'unknown'}:${symbol.filePath}`;
+
+                if (collapsedNodes.has(domainId)) {
+                    nodeRedirection.set(symbolId, domainId);
+                } else if (collapsedNodes.has(fileId)) {
+                    nodeRedirection.set(symbolId, fileId);
+                } else {
+                    // It is visible itself
+                    // nodeRedirection.set(symbolId, symbolId);
+                }
+            });
+
+            // Also map files to domains if domain is collapsed
+            graphData.files.forEach(file => {
+                // We need domain info for file. `GraphData.files` doesn't have it easily.
+                // We derived it from symbols. 
+                // Let's assume we can skip this precision or handle it via symbol iteration.
+            });
+
+            // Check edges
+            const processedEdges: Edge[] = [];
+            const uniqueEdges = new Set<string>();
+
+            graphData.edges.forEach((edge, index) => {
+                let source = edge.source;
+                let target = edge.target;
+
+                // Apply redirection
+                if (nodeRedirection.has(source)) source = nodeRedirection.get(source)!;
+                if (nodeRedirection.has(target)) target = nodeRedirection.get(target)!;
+
+                // Only add if source != target (ignore self-loops after collapse)
+                if (source !== target && visibleNodeIds.has(source) && visibleNodeIds.has(target)) {
+                    // Check for duplicates
+                    const key = `${source}-${target}-${edge.type}`;
+                    if (!uniqueEdges.has(key)) {
+                        uniqueEdges.add(key);
+                        processedEdges.push({
+                            id: `edge-${index}`,
+                            source,
+                            target,
+                            type: 'smoothstep',
+                            animated: edge.type === 'call',
+                            style: {
+                                stroke: edge.type === 'call' ? '#3b82f6' : edge.type === 'import' ? '#10b981' : '#6b7280',
+                                strokeWidth: 1.5,
+                            },
+                        });
+                    }
+                }
+            });
 
             // Optimize edges for performance
-            const optimizedEdges = optimizeEdges(rawEdges, 1000);
+            // Increased limit to prevent breaking analysis features (flow/impact)
+            // when many nodes are uncollapsed
+            const optimizedEdges = optimizeEdges(processedEdges, 10000);
 
             setAllNodes([...domainNodes, ...fileNodes, ...symbolNodes]);
             setAllEdges(optimizedEdges);
@@ -211,7 +298,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         buildNodes();
         // Reset initial fit when graph data changes
         setHasInitialFit(false);
-    }, [graphData]);
+    }, [graphData, collapsedNodes, toggleNodeCollapse]);
 
     // Memoize impact analysis to prevent redundant calculations
     const impactAnalysis = useMemo(() => {

@@ -81,6 +81,7 @@ export interface FileNodeData extends Record<string, unknown> {
     isDimmed?: boolean;
     isActive?: boolean;
     isClickable?: boolean;
+    onToggleCollapse?: () => void;
 }
 
 export interface SymbolNodeData extends Record<string, unknown> {
@@ -112,6 +113,7 @@ export interface DomainNodeData extends Record<string, unknown> {
     domain: string;
     health: DomainHealth;
     collapsed: boolean;
+    onToggleCollapse?: () => void;
 }
 
 // Updated graph data with domains

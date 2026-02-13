@@ -114,9 +114,37 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
                 }}
             >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    {/* Collapse Toggle */}
+                    <div
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            if (typeof data.onToggleCollapse === 'function') {
+                                data.onToggleCollapse();
+                            }
+                        }}
+                        style={{
+                            cursor: 'pointer',
+                            fontSize: '16px',
+                            width: '24px',
+                            height: '24px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            borderRadius: '4px',
+                            backgroundColor: colors.bg,
+                            color: colors.text,
+                        }}
+                        className="hover:bg-opacity-80"
+                    >
+                        {collapsed ? '▶' : '▼'}
+                    </div>
+
                     <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
                         {displayName}
                     </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <div
                         style={{
                             fontSize: '11px',
@@ -128,19 +156,6 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
                     >
                         {symbolCount} symbols
                     </div>
-                    {isClickable && (
-                        <div
-                            style={{
-                                fontSize: '10px',
-                                padding: '2px 6px',
-                                borderRadius: '4px',
-                                backgroundColor: '#3b82f620',
-                                color: '#3b82f6',
-                            }}
-                        >
-                            Click to explore →
-                        </div>
-                    )}
                 </div>
 
                 {/* Health Badge */}

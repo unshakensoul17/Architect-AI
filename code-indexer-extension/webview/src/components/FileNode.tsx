@@ -70,25 +70,27 @@ const FileNode = memo(({ data }: NodeProps<Node<FileNodeData>>) => {
                 }}
             >
                 <div className="flex items-center justify-between">
-                    <div className="flex-1 min-w-0">
-                        <div className="text-sm font-bold truncate flex items-center gap-2" title={fileName}>
-                            📄 {fileName}
-                            {isClickable && (
-                                <span
-                                    style={{
-                                        fontSize: '9px',
-                                        padding: '1px 4px',
-                                        borderRadius: '3px',
-                                        backgroundColor: '#3b82f620',
-                                        color: '#3b82f6',
-                                    }}
-                                >
-                                    Click →
-                                </span>
-                            )}
+                    <div className="flex-1 min-w-0 flex items-center gap-2">
+                        {/* Collapse Toggle */}
+                        <div
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (typeof data.onToggleCollapse === 'function') {
+                                    data.onToggleCollapse();
+                                }
+                            }}
+                            className="cursor-pointer hover:bg-black/10 rounded px-1"
+                        >
+                            {data.collapsed ? '▶' : '▼'}
                         </div>
-                        <div className="text-[10px] opacity-70 truncate" title={dirPath}>
-                            {dirPath}
+
+                        <div className="min-w-0">
+                            <div className="text-sm font-bold truncate flex items-center gap-2" title={fileName}>
+                                📄 {fileName}
+                            </div>
+                            <div className="text-[10px] opacity-70 truncate" title={dirPath}>
+                                {dirPath}
+                            </div>
                         </div>
                     </div>
                     {isActive && (
@@ -105,25 +107,27 @@ const FileNode = memo(({ data }: NodeProps<Node<FileNodeData>>) => {
                 </div>
             </div>
 
-            {/* Stats - Always show in progressive mode for context */}
-            <div className="px-3 py-2 text-xs">
-                <div className="flex items-center justify-between mb-1">
-                    <span className="opacity-70">Symbols:</span>
-                    <span className="font-semibold">{symbolCount}</span>
+            {/* Stats - Only show if not collapsed */}
+            {!data.collapsed && (
+                <div className="px-3 py-2 text-xs">
+                    <div className="flex items-center justify-between mb-1">
+                        <span className="opacity-70">Symbols:</span>
+                        <span className="font-semibold">{symbolCount}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                        <span className="opacity-70">Avg Coupling:</span>
+                        <span
+                            className="font-semibold px-2 py-0.5 rounded"
+                            style={{
+                                backgroundColor: borderColor + '40',
+                                color: borderColor,
+                            }}
+                        >
+                            {(avgCoupling * 100).toFixed(0)}%
+                        </span>
+                    </div>
                 </div>
-                <div className="flex items-center justify-between">
-                    <span className="opacity-70">Avg Coupling:</span>
-                    <span
-                        className="font-semibold px-2 py-0.5 rounded"
-                        style={{
-                            backgroundColor: borderColor + '40',
-                            color: borderColor,
-                        }}
-                    >
-                        {(avgCoupling * 100).toFixed(0)}%
-                    </span>
-                </div>
-            </div>
+            )}
 
             <Handle type="source" position={Position.Bottom} className="w-3 h-3" />
         </div>

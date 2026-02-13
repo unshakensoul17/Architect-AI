@@ -38,10 +38,14 @@ export async function applyElkLayout(
             'elk.algorithm': 'layered',
             'elk.direction': direction,
             'elk.spacing.nodeNode': nodeSpacing.toString(),
-            'elk.spacing.edgeNode': '20',
+            'elk.spacing.edgeNode': '25',
             'elk.layered.spacing.nodeNodeBetweenLayers': layerSpacing.toString(),
             'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-            'elk.padding': '[top=50,left=20,bottom=20,right=20]',
+            'elk.padding': '[top=50,left=50,bottom=50,right=50]',
+            // Edge Bundling / Routing
+            'elk.edgeRouting': 'SPLINES', // Curves
+            'elk.layered.mergeEdges': 'true', // Merge similar edges
+            'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX', // Better vertical alignment
         },
         children: domainNodes.map((domainNode) => ({
             id: domainNode.id,
@@ -50,10 +54,13 @@ export async function applyElkLayout(
             layoutOptions: {
                 'elk.algorithm': 'layered',
                 'elk.direction': 'DOWN',
-                'elk.padding': '[top=100,left=30,bottom=30,right=30]', // More padding for domain header
+                'elk.padding': '[top=80,left=30,bottom=30,right=30]',
                 'elk.spacing.nodeNode': '40',
-                'elk.layered.spacing.nodeNodeBetweenLayers': '80',
+                'elk.layered.spacing.nodeNodeBetweenLayers': '60',
                 'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+                // Try to make it roughly square/rectangular instead of one long line
+                'elk.aspectRatio': '1.6',
+                'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
             },
             // Files as children of domains
             children: fileNodes
@@ -63,11 +70,12 @@ export async function applyElkLayout(
                     width: 300,
                     height: 150,
                     layoutOptions: {
-                        'elk.algorithm': 'layered',
+                        'elk.algorithm': 'layered', // Symbols usually have flow, so layered is good here
                         'elk.direction': 'DOWN',
                         'elk.padding': '[top=60,left=20,bottom=20,right=20]',
-                        'elk.spacing.nodeNode': '30',
-                        'elk.layered.spacing.nodeNodeBetweenLayers': '60',
+                        'elk.spacing.nodeNode': '20',
+                        'elk.layered.spacing.nodeNodeBetweenLayers': '40',
+                        'elk.edgeRouting': 'SPLINES',
                     },
                     // Symbols as children of files
                     children: symbolNodes
