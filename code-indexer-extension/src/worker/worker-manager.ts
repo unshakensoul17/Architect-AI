@@ -332,7 +332,7 @@ export class WorkerManager {
             // Handle AI why result
             return {
                 type: 'inspector-ai-why-result',
-                content: response.content,
+                data: response.content,
                 model: response.model
             };
         } else if (response.type === 'error') {
@@ -419,7 +419,7 @@ export class WorkerManager {
      * Reject all pending requests
      */
     private rejectAllPending(error: Error): void {
-        for (const [id, pending] of this.pendingRequests) {
+        for (const [_id, pending] of this.pendingRequests) {
             clearTimeout(pending.timeout);
             pending.reject(error);
         }

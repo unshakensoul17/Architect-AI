@@ -23,6 +23,8 @@ export interface RefinedNodeData {
     impact_depth: number;
     search_tags: string[]; // will be serialized to JSON in DB
     fragility: string;
+    risk_score: number; // 0-100 AI-calculated risk severity
+    risk_reason: string; // AI explanation (e.g. "If this fails, the Auth flow stops")
 }
 
 export interface RefinedEdgeData {
@@ -194,10 +196,17 @@ export class AIOrchestrator {
 
     /**
      * Extract code snippets from context
-     * In a real implementation, this would read actual file contents
+     * CRITICAL: Includes the TARGET symbol's code first, then neighbors
+     * 
+     * ENHANCED (Phase 2.2): Cross-File Summarization
+     * If a neighbor already has an AI-generated `purpose` (from Architect Pass),
+     * inject that 1-line summary instead of the full source code.
+     * This dramatically reduces token usage while preserving architectural context.
      */
     private async extractCodeSnippets(context: SymbolContext): Promise<string[]> {
         const snippets: string[] = [];
+        let summarizedCount = 0;
+        let rawCount = 0;
 
         // Helper to read code from file
         const readSymbolCode = (symbol: { filePath: string; rangeStartLine: number; rangeEndLine: number }): string => {
@@ -215,18 +224,40 @@ export class AIOrchestrator {
             }
         };
 
-        // Extract neighbor code snippets
+        // TARGET symbol always gets full code — the AI needs to see what it's analyzing!
+        const targetCode = readSymbolCode(context.symbol);
+        snippets.push(`// TARGET: ${context.symbol.name} (${context.symbol.type})\n${targetCode}`);
+
+        // Extract neighbor context — use summaries when available
         for (const neighbor of context.neighbors) {
-            const code = readSymbolCode(neighbor);
-            snippets.push(`// ${neighbor.name} (${neighbor.type}) from ${neighbor.filePath}\n${code}`);
+            const neighborAny = neighbor as any;
+
+            if (neighborAny.purpose && typeof neighborAny.purpose === 'string') {
+                // Cross-File Summarization: use AI-generated purpose instead of raw code
+                const fragility = neighborAny.fragility ? ` [fragility: ${neighborAny.fragility}]` : '';
+                const domain = neighborAny.domain ? ` [${neighborAny.domain}]` : '';
+                snippets.push(
+                    `// RELATED: ${neighbor.name} (${neighbor.type})${domain}${fragility} — ${neighborAny.purpose}`
+                );
+                summarizedCount++;
+            } else {
+                // No AI summary yet — inject raw code
+                const code = readSymbolCode(neighbor);
+                snippets.push(`// RELATED: ${neighbor.name} (${neighbor.type}) from ${neighbor.filePath}\n${code}`);
+                rawCount++;
+            }
         }
 
-        console.log(`[Orchestrator] Extracted ${snippets.length} neighbor code snippets`);
+        console.log(`[Orchestrator] Context: target code + ${summarizedCount} summarized + ${rawCount} raw neighbors`);
         return snippets;
     }
 
     /**
      * Build prompt with context
+     * 
+     * ENHANCED (Phase 2.1): Chain-of-Architectural-Thought
+     * Instructs the AI to identify design patterns before answering,
+     * producing richer architectural analysis instead of just code explanation.
      */
     private buildPrompt(query: string, context: SymbolContext | null, neighborCode: string[]): string {
         let prompt = '';
@@ -238,6 +269,19 @@ export class AIOrchestrator {
             prompt += `File: ${context.symbol.filePath}\n`;
             prompt += `Lines: ${context.symbol.rangeStartLine}-${context.symbol.rangeEndLine}\n\n`;
 
+            // Include AI-enriched metadata if available
+            const symbolAny = context.symbol as any;
+            if (symbolAny.purpose) {
+                prompt += `Purpose: ${symbolAny.purpose}\n`;
+            }
+            if (symbolAny.fragility) {
+                prompt += `Fragility: ${symbolAny.fragility}\n`;
+            }
+            if (symbolAny.impactDepth) {
+                prompt += `Impact Depth: ${symbolAny.impactDepth}/10\n`;
+            }
+            prompt += '\n';
+
             if (neighborCode.length > 0) {
                 prompt += `## Related Code (${neighborCode.length} neighbors)\n`;
                 neighborCode.forEach((code, i) => {
@@ -245,6 +289,13 @@ export class AIOrchestrator {
                 });
                 prompt += '\n';
             }
+
+            // Chain-of-Architectural-Thought: ask AI to identify patterns first
+            prompt += `## Architectural Analysis\n`;
+            prompt += `Before answering, identify the architectural pattern(s) `;
+            prompt += `used in this code (e.g., Factory, Singleton, Observer, `;
+            prompt += `Middleware, Repository, CQRS, Event-Driven, Strategy, Decorator). `;
+            prompt += `State the pattern(s), then answer in that context.\n\n`;
         }
 
         prompt += `## Question\n${query}`;
@@ -254,6 +305,7 @@ export class AIOrchestrator {
 
     /**
      * Execute reflex path (Groq/Llama 3.1)
+     * Optimized for speed but now allows technical detail
      */
     private async executeReflexPath(
         prompt: string,
@@ -271,9 +323,19 @@ export class AIOrchestrator {
             };
         }
 
-        const systemPrompt = `You are a code assistant providing quick, concise explanations.
-Keep responses brief and focused on the question asked.
-If there's related code context provided, reference it when relevant.`;
+        // **FIX 3: LOOSEN CONSTRAINTS FOR DEEP ANALYSIS**
+        // Allow more detail when we have context (Inspector panel)
+        // Keep it brief for quick queries without context
+        const systemPrompt = context
+            ? `You are a code analysis expert. Provide clear, technical explanations.
+When analyzing code, explain:
+- What it does
+- How it works (key logic)
+- Potential issues or improvements
+
+Be concise but thorough - aim for 50-150 words for most explanations.`
+            : `You are a code assistant providing quick explanations.
+Keep responses brief and focused - under 30 words when possible.`;
 
         const response = await this.groqClient.complete(prompt, systemPrompt);
 
@@ -288,18 +350,21 @@ If there's related code context provided, reference it when relevant.`;
     }
 
     /**
-     * Execute strategic path (Vertex AI/Gemini 1.5 Pro)
+     * Execute strategic path (Gemini 1.5 Pro via Gemini or Vertex)
      */
     private async executeStrategicPath(
-        _prompt: string,  // Prompt kept for future use with alternative models
+        _prompt: string,
         intent: ClassifiedIntent,
         context: SymbolContext | null,
         neighborCode: string[],
         analysisType: 'security' | 'refactor' | 'dependencies' | 'general'
     ): Promise<AIResponse> {
-        if (!this.vertexClient) {
+        // Prefer GeminiClient (API Key based) for easier setup
+        const client = this.geminiClient || this.vertexClient;
+
+        if (!client) {
             return {
-                content: 'Vertex AI client not available. Please set GOOGLE_CLOUD_PROJECT environment variable.',
+                content: 'AI Strategic client not available. Please set GEMINI_API_KEY or GOOGLE_CLOUD_PROJECT.',
                 model: 'none',
                 intent,
                 latencyMs: 0,
@@ -312,17 +377,22 @@ If there's related code context provided, reference it when relevant.`;
         let targetCode = '';
         if (context) {
             try {
-                const content = fs.readFileSync(context.symbol.filePath, 'utf-8');
-                const lines = content.split('\n');
-                const start = Math.max(0, context.symbol.rangeStartLine - 1);
-                const end = Math.min(lines.length, context.symbol.rangeEndLine);
-                targetCode = lines.slice(start, end).join('\n');
+                if (fs.existsSync(context.symbol.filePath)) {
+                    const content = fs.readFileSync(context.symbol.filePath, 'utf-8');
+                    const lines = content.split('\n');
+                    const start = Math.max(0, context.symbol.rangeStartLine - 1);
+                    const end = Math.min(lines.length, context.symbol.rangeEndLine);
+                    targetCode = lines.slice(start, end).join('\n');
+                } else {
+                    targetCode = '// File not found for target code';
+                }
             } catch {
                 targetCode = '// Could not read target code';
             }
         }
 
-        const response = await this.vertexClient.analyzeCode(
+        // Execute analysis using the available client
+        const response = await client.analyzeCode(
             targetCode,
             neighborCode,
             analysisType,
@@ -532,6 +602,8 @@ For every relevant Node (Function/Class), infer:
 2. "impact_depth": Integer 1-10. 1=Local utility, 10=System core/critical path.
 3. "search_tags": Array of strings. Concepts/Business-logic terms (e.g., "auth", "payment", "user-flow").
 4. "fragility": "high", "medium", "low". specific logic that looks brittle or complex.
+5. "risk_score": Integer 0-100. How risky is this code? 0=Safe, 100=Critical failure point.
+6. "risk_reason": String. A concise explanation of why this code is risky (e.g., "If this function fails, the entire Auth flow stops").
 
 Also identify "implicit_links":
 Dependencies that are not explicit imports (e.g., events, dynamic calls, framework configuration).
@@ -543,7 +615,9 @@ Return a JSON object EXACTLY matching this interface:
       "purpose": "...",
       "impact_depth": 5,
       "search_tags": ["tag1", "tag2"],
-      "fragility": "low"
+      "fragility": "low",
+      "risk_score": 35,
+      "risk_reason": "..."
     }
   },
   "implicit_links": [

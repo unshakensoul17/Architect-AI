@@ -130,8 +130,8 @@ export class GraphWebviewProvider {
             return;
         }
 
-        const filePath = parts[0];
-        const line = parseInt(parts[2], 10);
+        const line = parseInt(parts[parts.length - 1], 10);
+        const filePath = parts.slice(0, -2).join(':');
 
         try {
             const uri = vscode.Uri.file(filePath);
@@ -219,7 +219,7 @@ export class GraphWebviewProvider {
     /**
      * Apply refactor changes to actual files
      */
-    private async handleApplyRefactor(message: { diff: string }): Promise<void> {
+    private async handleApplyRefactor(_message: { diff: string }): Promise<void> {
         try {
             const confirm = await vscode.window.showWarningMessage(
                 'Apply refactor changes? This will modify your files.',

@@ -150,7 +150,9 @@ export class CodeIndexDatabase {
                 { name: 'purpose', type: 'TEXT' },
                 { name: 'impact_depth', type: 'INTEGER' },
                 { name: 'search_tags', type: 'TEXT' },
-                { name: 'fragility', type: 'TEXT' }
+                { name: 'fragility', type: 'TEXT' },
+                { name: 'risk_score', type: 'INTEGER' },
+                { name: 'risk_reason', type: 'TEXT' }
             ];
 
             for (const migration of migrations) {
@@ -169,6 +171,21 @@ export class CodeIndexDatabase {
                 console.log('Migrating edges table: Adding reason column...');
                 this.db.exec('ALTER TABLE edges ADD COLUMN reason TEXT');
             }
+
+            // Create technical_debt table if it doesn't exist
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS technical_debt (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol_id INTEGER NOT NULL,
+                    smell_type TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    detected_at TEXT NOT NULL,
+                    FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_debt_symbol ON technical_debt(symbol_id);
+                CREATE INDEX IF NOT EXISTS idx_debt_severity ON technical_debt(severity);
+            `);
         } catch (error) {
             console.error('Migration error:', error);
         }
@@ -184,8 +201,8 @@ export class CodeIndexDatabase {
         const insertStmt = this.db.prepare(`
       INSERT INTO symbols (name, type, file_path, range_start_line, range_start_column, 
                           range_end_line, range_end_column, complexity, domain, 
-                          purpose, impact_depth, search_tags, fragility)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          purpose, impact_depth, search_tags, fragility, risk_score, risk_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
         const transaction = this.db.transaction((items: NewSymbol[]) => {
@@ -203,7 +220,9 @@ export class CodeIndexDatabase {
                     item.purpose || null,
                     item.impactDepth || null,
                     item.searchTags || null,
-                    item.fragility || null
+                    item.fragility || null,
+                    (item as any).riskScore || null,
+                    (item as any).riskReason || null
                 );
                 insertedIds.push(Number(info.lastInsertRowid));
             }
@@ -356,6 +375,8 @@ export class CodeIndexDatabase {
                     impactDepth: row.impact_depth,
                     searchTags: row.search_tags,
                     fragility: row.fragility,
+                    riskScore: row.risk_score,
+                    riskReason: row.risk_reason,
                 });
             }
         }
@@ -630,6 +651,8 @@ export class CodeIndexDatabase {
                 impactDepth: s.impactDepth,
                 searchTags: s.searchTags ? JSON.parse(s.searchTags) : undefined,
                 fragility: s.fragility,
+                riskScore: (s as any).riskScore,
+                riskReason: (s as any).riskReason,
             })),
             edges: allEdges.map((e) => {
                 const sourceSymbol = symbolMap.get(e.sourceId);
@@ -890,7 +913,8 @@ export class CodeIndexDatabase {
     updateSymbolsMetadata(updates: { id: number; metadata: any }[]): void {
         const updateStmt = this.db.prepare(`
             UPDATE symbols 
-            SET purpose = ?, impact_depth = ?, search_tags = ?, fragility = ?
+            SET purpose = ?, impact_depth = ?, search_tags = ?, fragility = ?,
+                risk_score = ?, risk_reason = ?
             WHERE id = ?
         `);
 
@@ -901,12 +925,67 @@ export class CodeIndexDatabase {
                     item.metadata.impactDepth || null,
                     item.metadata.searchTags || null,
                     item.metadata.fragility || null,
+                    item.metadata.riskScore ?? null,
+                    item.metadata.riskReason || null,
                     item.id
                 );
             }
         });
 
         transaction(updates);
+    }
+
+    /**
+     * Insert technical debt items
+     */
+    insertTechnicalDebt(items: { symbolId: number; smellType: string; severity: string; description: string }[]): void {
+        const now = new Date().toISOString();
+        const insertStmt = this.db.prepare(`
+            INSERT INTO technical_debt (symbol_id, smell_type, severity, description, detected_at)
+            VALUES (?, ?, ?, ?, ?)
+        `);
+
+        const transaction = this.db.transaction(() => {
+            // Clear existing debt items first
+            this.db.prepare('DELETE FROM technical_debt').run();
+            for (const item of items) {
+                insertStmt.run(item.symbolId, item.smellType, item.severity, item.description, now);
+            }
+        });
+
+        transaction();
+    }
+
+    /**
+     * Get technical debt items for a symbol
+     */
+    getTechnicalDebt(symbolId: number): { smellType: string; severity: string; description: string }[] {
+        const results = this.db.prepare(`
+            SELECT smell_type, severity, description FROM technical_debt WHERE symbol_id = ?
+        `).all(symbolId) as any[];
+
+        return results.map(r => ({
+            smellType: r.smell_type,
+            severity: r.severity,
+            description: r.description,
+        }));
+    }
+
+    /**
+     * Get all technical debt items
+     */
+    getAllTechnicalDebt(): { symbolId: number; smellType: string; severity: string; description: string }[] {
+        const results = this.db.prepare(`
+            SELECT symbol_id, smell_type, severity, description FROM technical_debt
+            ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
+        `).all() as any[];
+
+        return results.map(r => ({
+            symbolId: r.symbol_id,
+            smellType: r.smell_type,
+            severity: r.severity,
+            description: r.description,
+        }));
     }
 
     /**

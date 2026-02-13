@@ -66,6 +66,11 @@
         "codeIndexer.geminiApiKey": {
           "type": "string",
           "description": "Google Gemini API Key (Gemini 1.5 Pro). Simple alternative to Vertex AI project ID."
+        },
+        "architectAI.useLSP": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable LSP-based symbol resolution for 100% accurate type definitions (TypeScript/JavaScript). Uses VS Code's built-in language server."
         }
       }
     }

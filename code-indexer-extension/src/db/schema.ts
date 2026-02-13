@@ -27,6 +27,8 @@ export const symbols = sqliteTable('symbols', {
     impactDepth: integer('impact_depth'), // AI-inferred impact depth
     searchTags: text('search_tags'), // AI-inferred search tags (JSON)
     fragility: text('fragility'), // AI-inferred fragility
+    riskScore: integer('risk_score'), // AI-calculated risk score 0-100
+    riskReason: text('risk_reason'), // AI explanation of risk (e.g. "if this fails, auth flow stops")
 });
 
 /**
@@ -132,3 +134,21 @@ export const domainCache = sqliteTable('domain_cache', {
 
 export type DomainCacheEntry = typeof domainCache.$inferSelect;
 export type NewDomainCacheEntry = typeof domainCache.$inferInsert;
+
+/**
+ * Technical Debt Table
+ * Stores detected code smells and debt items per symbol
+ */
+export const technicalDebt = sqliteTable('technical_debt', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    symbolId: integer('symbol_id')
+        .notNull()
+        .references(() => symbols.id, { onDelete: 'cascade' }),
+    smellType: text('smell_type').notNull(), // long_method, god_object, feature_envy, high_fan_out
+    severity: text('severity').notNull(), // high, medium, low
+    description: text('description').notNull(),
+    detectedAt: text('detected_at').notNull(),
+});
+
+export type TechnicalDebtItem = typeof technicalDebt.$inferSelect;
+export type NewTechnicalDebtItem = typeof technicalDebt.$inferInsert;

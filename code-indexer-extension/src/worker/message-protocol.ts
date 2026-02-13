@@ -125,6 +125,16 @@ export type WorkerRequest =
     | {
         type: 'refine-graph';
         id: string;
+    }
+    | {
+        type: 'analyze-impact';
+        id: string;
+        nodeId: string;
+    }
+    | {
+        type: 'refine-incremental';
+        id: string;
+        changedFiles: string[];  // File paths that were just re-indexed
     };
 
 /**
@@ -257,6 +267,20 @@ export type WorkerResponse =
         id: string;
         refinedNodeCount: number;
         implicitLinkCount: number;
+    }
+    | {
+        type: 'impact-result';
+        id: string;
+        sourceNodeId: string;
+        affected: { nodeId: string; depth: number; impactType: string }[];
+        totalAffected: number;
+        riskLevel: 'low' | 'medium' | 'high';
+    }
+    | {
+        type: 'refine-incremental-complete';
+        id: string;
+        refinedNodeCount: number;
+        filesProcessed: number;
     };
 
 /**
@@ -334,7 +358,7 @@ export interface InspectorRiskData {
 export interface InspectorAIResult {
     action: string;
     content: string;
-    model: 'groq' | 'vertex';
+    model: string;  // Flexible to support various model names
     cached: boolean;
     loading: boolean;
     error?: string;

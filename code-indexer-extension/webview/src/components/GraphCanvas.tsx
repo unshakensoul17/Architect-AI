@@ -68,6 +68,9 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     const reactFlowInstance = useReactFlow();
     const { focusNode, clearFocus } = useFocusEngine(reactFlowInstance);
 
+    // Track if we've done the initial fitView to prevent blinking
+    const [hasInitialFit, setHasInitialFit] = useState(false);
+
     // Execution flows for flow mode
     const [executionFlows, setExecutionFlows] = useState<ReturnType<typeof detectExecutionFlows>>([]);
 
@@ -206,6 +209,8 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         };
 
         buildNodes();
+        // Reset initial fit when graph data changes
+        setHasInitialFit(false);
     }, [graphData]);
 
     // Memoize impact analysis to prevent redundant calculations
@@ -271,7 +276,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         });
 
         return result;
-    }, [allNodes, allEdges, currentMode, focusedNodeId, relatedNodeIdsKey, executionFlows]);
+    }, [allNodes, allEdges, currentMode, focusedNodeId, relatedNodeIdsKey, executionFlows, searchQuery]);
 
     // Apply layout when visible nodes change (debounced to prevent rapid re-layouts)
     useEffect(() => {
@@ -314,6 +319,18 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
 
         return () => clearTimeout(layoutTimer);
     }, [visibleNodes, visibleEdges, currentMode, setNodes, setEdges]);
+
+    // Fit view only once when nodes first load (prevents blinking)
+    useEffect(() => {
+        if (nodes.length > 0 && !hasInitialFit && !isLayouting) {
+            // Small delay to ensure layout is complete
+            const fitTimer = setTimeout(() => {
+                reactFlowInstance.fitView({ padding: 0.1, duration: 200 });
+                setHasInitialFit(true);
+            }, 100);
+            return () => clearTimeout(fitTimer);
+        }
+    }, [nodes, hasInitialFit, isLayouting, reactFlowInstance]);
 
     // Handle node click based on view mode
     const handleNodeClick = useCallback(
@@ -412,13 +429,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             {/* View Mode Bar */}
             <ViewModeBar currentMode={currentMode} onModeChange={handleModeChange} />
 
-            {/* Graph Canvas */}
             <div style={{ flex: 1, position: 'relative' }}>
-                {isLayouting && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
-                        <div className="text-white font-semibold">Calculating Layout...</div>
-                    </div>
-                )}
                 <ReactFlow
                     nodes={nodes}
                     edges={edges}
@@ -426,7 +437,6 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     onEdgesChange={onEdgesChange}
                     onNodeClick={handleNodeClick}
                     nodeTypes={nodeTypes}
-                    fitView
                     minZoom={0.1}
                     maxZoom={2}
                     nodesDraggable={false}

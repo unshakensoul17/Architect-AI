@@ -14,6 +14,7 @@ import {
 } from './message-protocol';
 import { AIOrchestrator, createOrchestrator } from '../ai';
 import { InspectorService } from './inspector-service';
+import { ImpactAnalyzer } from './impact-analyzer';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -254,6 +255,14 @@ class IndexWorker {
 
                 case 'refine-graph':
                     this.handleRefineGraph(request.id);
+                    break;
+
+                case 'analyze-impact':
+                    this.handleAnalyzeImpact(request.id, request.nodeId);
+                    break;
+
+                case 'refine-incremental':
+                    this.handleRefineIncremental(request.id, request.changedFiles);
                     break;
 
                 default:
@@ -771,7 +780,9 @@ class IndexWorker {
                             purpose: metadata.purpose,
                             impactDepth: metadata.impact_depth,
                             searchTags: metadata.search_tags ? JSON.stringify(metadata.search_tags) : null,
-                            fragility: metadata.fragility
+                            fragility: metadata.fragility,
+                            riskScore: metadata.risk_score ?? null,
+                            riskReason: metadata.risk_reason || null
                         }
                     });
                 }
@@ -856,6 +867,176 @@ class IndexWorker {
             error,
             stack,
         });
+    }
+
+    /**
+     * Handle change impact analysis request
+     */
+    private handleAnalyzeImpact(id: string, nodeId: string): void {
+        try {
+            const analyzer = new ImpactAnalyzer(this.db!);
+
+            // Parse nodeId to find the symbol
+            const parts = nodeId.split(':');
+            let symbolId: number | undefined;
+
+            if (parts.length >= 3) {
+                const line = parseInt(parts[parts.length - 1], 10);
+                const symbolName = parts[parts.length - 2];
+                const filePath = parts.slice(0, -2).join(':');
+
+                const symbols = this.db!.getSymbolsByFile(filePath);
+                const symbol = symbols.find(s => s.name === symbolName && s.rangeStartLine === line);
+                if (symbol) {
+                    symbolId = symbol.id;
+                }
+            }
+
+            if (!symbolId) {
+                this.sendMessage({
+                    type: 'impact-result',
+                    id,
+                    sourceNodeId: nodeId,
+                    affected: [],
+                    totalAffected: 0,
+                    riskLevel: 'low'
+                });
+                return;
+            }
+
+            const impactNodes = analyzer.getImpactNodeIds(symbolId);
+            const result = analyzer.analyzeImpact(symbolId);
+
+            this.sendMessage({
+                type: 'impact-result',
+                id,
+                sourceNodeId: nodeId,
+                affected: impactNodes,
+                totalAffected: result.totalAffected,
+                riskLevel: result.riskLevel
+            });
+
+            console.log(`[Worker] Impact analysis for ${nodeId}: ${result.totalAffected} affected nodes (${result.riskLevel} risk)`);
+
+        } catch (error) {
+            this.sendError(id, `Impact analysis failed: ${(error as Error).message}`);
+        }
+    }
+
+    /**
+     * Handle incremental architect pass for changed files
+     * Only re-analyzes symbols in changed files + their 1st-degree neighbors
+     */
+    private async handleRefineIncremental(id: string, changedFiles: string[]): Promise<void> {
+        try {
+            if (!this.orchestrator || !this.db) {
+                this.sendError(id, 'Orchestrator or database not initialized');
+                return;
+            }
+
+            console.log(`[Worker] Incremental Architect Pass for ${changedFiles.length} changed files`);
+
+            // Collect symbols from changed files + neighbors
+            const targetSymbolIds = new Set<number>();
+            const partialSkeleton: Record<string, any> = {};
+
+            for (const filePath of changedFiles) {
+                const fileSymbols: any[] = this.db.getSymbolsByFile(filePath);
+
+                for (const symbol of fileSymbols) {
+                    targetSymbolIds.add(symbol.id);
+
+                    // Build skeleton entry
+                    const nodeId = `${filePath}:${symbol.name}:${symbol.rangeStartLine}`;
+                    partialSkeleton[nodeId] = {
+                        name: symbol.name,
+                        type: symbol.type,
+                        startLine: symbol.rangeStartLine,
+                        endLine: symbol.rangeEndLine,
+                        complexity: symbol.complexity,
+                        file: filePath
+                    };
+
+                    // Include 1st-degree neighbors in the skeleton for richer context
+                    const outgoing = this.db.getOutgoingEdges(symbol.id);
+                    const incoming = this.db.getIncomingEdges(symbol.id);
+
+                    for (const edge of [...outgoing, ...incoming]) {
+                        const neighborId = edge.sourceId === symbol.id ? edge.targetId : edge.sourceId;
+                        if (!targetSymbolIds.has(neighborId)) {
+                            const neighbor = this.db.getSymbolById(neighborId);
+                            if (neighbor) {
+                                const nId = `${neighbor.filePath}:${neighbor.name}:${neighbor.rangeStartLine}`;
+                                if (!partialSkeleton[nId]) {
+                                    partialSkeleton[nId] = {
+                                        name: neighbor.name,
+                                        type: neighbor.type,
+                                        startLine: neighbor.rangeStartLine,
+                                        endLine: neighbor.rangeEndLine,
+                                        complexity: neighbor.complexity,
+                                        file: neighbor.filePath
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (Object.keys(partialSkeleton).length === 0) {
+                this.sendMessage({
+                    type: 'refine-incremental-complete',
+                    id,
+                    refinedNodeCount: 0,
+                    filesProcessed: changedFiles.length
+                });
+                return;
+            }
+
+            // Run AI refinement on partial skeleton
+            const refined = await this.orchestrator.refineSystemGraph(partialSkeleton);
+
+            // Update only the targeted symbols in the DB
+            const allSymbols = this.db.getAllSymbols();
+            const symbolsToUpdate: { id: number; metadata: any }[] = [];
+
+            for (const symbol of allSymbols) {
+                if (!targetSymbolIds.has(symbol.id)) continue;
+
+                const nodeId = `${symbol.filePath}:${symbol.name}:${symbol.rangeStartLine}`;
+                const metadata = refined.nodes[nodeId];
+
+                if (metadata) {
+                    symbolsToUpdate.push({
+                        id: symbol.id,
+                        metadata: {
+                            purpose: metadata.purpose,
+                            impactDepth: metadata.impact_depth,
+                            searchTags: metadata.search_tags ? JSON.stringify(metadata.search_tags) : null,
+                            fragility: metadata.fragility,
+                            riskScore: metadata.risk_score ?? null,
+                            riskReason: metadata.risk_reason || null
+                        }
+                    });
+                }
+            }
+
+            if (symbolsToUpdate.length > 0) {
+                this.db.updateSymbolsMetadata(symbolsToUpdate);
+            }
+
+            console.log(`[Worker] Incremental refinement: ${symbolsToUpdate.length} nodes updated from ${changedFiles.length} files`);
+
+            this.sendMessage({
+                type: 'refine-incremental-complete',
+                id,
+                refinedNodeCount: symbolsToUpdate.length,
+                filesProcessed: changedFiles.length
+            });
+
+        } catch (error) {
+            this.sendError(id, `Incremental refinement failed: ${(error as Error).message}`);
+        }
     }
 }
 

@@ -232,6 +232,7 @@ export class InspectorService {
 
     /**
      * Get risks for a node
+     * Enhanced: Uses AI-calculated riskScore/riskReason + technical debt items
      */
     async getRisks(nodeId: string, nodeType: 'domain' | 'file' | 'symbol'): Promise<InspectorRiskData> {
         let level: 'low' | 'medium' | 'high' = 'low';
@@ -250,15 +251,39 @@ export class InspectorService {
                     const symbol = symbols.find(s => s.name === symbolName && s.rangeStartLine === line);
 
                     if (symbol) {
-                        if (symbol.complexity > 15) {
-                            warnings.push(`High complexity (${symbol.complexity})`);
-                            heatScore += 30;
+                        // Use AI risk score if available (from Architect Pass)
+                        if ((symbol as any).riskScore != null && (symbol as any).riskScore > 0) {
+                            heatScore = (symbol as any).riskScore;
+                            if ((symbol as any).riskReason) {
+                                warnings.push(`AI Risk: ${(symbol as any).riskReason}`);
+                            }
                         }
 
+                        // Static complexity check
+                        if (symbol.complexity > 15) {
+                            warnings.push(`High complexity (${symbol.complexity})`);
+                            if (heatScore === 0) heatScore += 30;
+                        }
+
+                        // Coupling check
                         const incoming = this.db.getIncomingEdges(symbol.id).length;
                         if (incoming > 20) {
                             warnings.push(`High coupling (called by ${incoming} symbols)`);
-                            heatScore += 20;
+                            if (heatScore === 0) heatScore += 20;
+                        }
+
+                        // Fragility from Architect Pass
+                        if (symbol.fragility === 'high') {
+                            warnings.push('AI-flagged as fragile');
+                            heatScore = Math.max(heatScore, 60);
+                        }
+
+                        // Technical debt items
+                        const debtItems = this.db.getTechnicalDebt(symbol.id);
+                        for (const item of debtItems) {
+                            warnings.push(`${item.smellType}: ${item.description}`);
+                            if (item.severity === 'high') heatScore = Math.max(heatScore, 70);
+                            else if (item.severity === 'medium') heatScore = Math.max(heatScore, 40);
                         }
                     }
                 }
@@ -268,7 +293,7 @@ export class InspectorService {
             else if (heatScore > 30) level = 'medium';
 
         } catch (error) {
-            console.error('Error calculation risks:', error);
+            console.error('Error calculating risks:', error);
         }
 
         return { level, heatScore, warnings };
@@ -289,18 +314,42 @@ export class InspectorService {
         else if (action === 'audit') analysisType = 'security';
         else if (action === 'dependencies') analysisType = 'dependencies';
 
+        // **FIX 2: EXTRACT SYMBOL ID FROM NODE ID**
+        // Parse the nodeId to get symbolId for context fetching
+        let symbolId: number | undefined;
+
+        // Symbol IDs have format: "filePath:symbolName:line"
+        const parts = nodeId.split(':');
+        if (parts.length >= 3) {
+            const line = parseInt(parts[parts.length - 1], 10);
+            const symbolName = parts[parts.length - 2];
+            const filePath = parts.slice(0, -2).join(':');
+
+            // Look up the actual symbol ID from the database
+            const symbols = this.db.getSymbolsByFile(filePath);
+            const symbol = symbols.find(s => s.name === symbolName && s.rangeStartLine === line);
+
+            if (symbol) {
+                symbolId = symbol.id;
+                console.log(`[Inspector] Resolved nodeId "${nodeId}" to symbolId ${symbolId}`);
+            } else {
+                console.warn(`[Inspector] Could not resolve symbol from nodeId: ${nodeId}`);
+            }
+        }
+
         // Build prompt based on action
-        if (action === 'explain') prompt = `Explain the code at ${nodeId}`;
-        else if (action === 'audit') prompt = `Audit the code at ${nodeId} for security and bugs`;
-        else if (action === 'refactor') prompt = `Refactor the code at ${nodeId} to improve quality using best practices`;
-        else if (action === 'optimize') prompt = `Optimize the code at ${nodeId} for performance`;
-        else if (action === 'dependencies') prompt = `Analyze dependencies for ${nodeId}`;
+        if (action === 'explain') prompt = `Explain in detail what this code does, its purpose, and how it works.`;
+        else if (action === 'audit') prompt = `Perform a thorough security audit of this code. Identify vulnerabilities, risky patterns, and suggest fixes.`;
+        else if (action === 'refactor') prompt = `Analyze this code for quality issues and suggest specific refactoring improvements with code examples.`;
+        else if (action === 'optimize') prompt = `Analyze this code for performance bottlenecks and suggest optimizations.`;
+        else if (action === 'dependencies') prompt = `Analyze the dependency relationships for this code, including coupling and impact.`;
 
         try {
-            // Use orchestrator to process
-            // Note: In real app, we'd pass the symbol ID to orchestrator to fetch context
+            // Use orchestrator with proper symbolId for context
             const result = await this.orchestrator.processQuery(prompt, {
-                analysisType
+                symbolId,  // **THIS IS THE KEY FIX**
+                analysisType,
+                includeContext: true  // Ensure we fetch full context
             });
 
             // Check for diff blocks if refactor
@@ -310,7 +359,7 @@ export class InspectorService {
                 if (diffMatch) {
                     patch = {
                         summary: 'AI Suggested Refactor',
-                        impactedNodeCount: 1, // approximate
+                        impactedNodeCount: 1,
                         diff: diffMatch[1]
                     };
                 }
@@ -319,7 +368,7 @@ export class InspectorService {
             return {
                 action,
                 content: result.content,
-                model: 'groq', // Placeholder, orchestrator should return model used
+                model: result.model === 'llama-3.1-8b-instant' ? 'groq' : result.model.includes('gemini') ? 'vertex' : result.model,
                 cached: false,
                 loading: false,
                 patch
@@ -341,11 +390,35 @@ export class InspectorService {
      * Explain why a risk is high/medium
      */
     async explainRisk(nodeId: string, metric: string): Promise<string> {
-        const prompt = `Explain why the risk metric "${metric}" is applicable to ${nodeId}. What factors contribute to this risk?`;
+        // Resolve symbol ID for context
+        let symbolId: number | undefined;
+        let displayName = nodeId;
+
+        const parts = nodeId.split(':');
+        if (parts.length >= 3) {
+            const line = parseInt(parts[parts.length - 1], 10);
+            const symbolName = parts[parts.length - 2];
+            const filePath = parts.slice(0, -2).join(':');
+
+            displayName = symbolName;
+            const symbols = this.db.getSymbolsByFile(filePath);
+            const symbol = symbols.find(s => s.name === symbolName && s.rangeStartLine === line);
+
+            if (symbol) {
+                symbolId = symbol.id;
+            }
+        }
+
+        const prompt = `The symbol "${displayName}" is classified as having a "${metric}" risk level. 
+        Analyze the code and explain why this risk level is assigned. 
+        Focus on complexity, coupling, and any specific patterns in the implementation that contribute to this risk.
+        Be concise but specific to the provided code.`;
 
         try {
             const result = await this.orchestrator.processQuery(prompt, {
-                analysisType: 'general'
+                symbolId,
+                analysisType: 'general',
+                includeContext: true
             });
             return result.content;
         } catch (error) {
