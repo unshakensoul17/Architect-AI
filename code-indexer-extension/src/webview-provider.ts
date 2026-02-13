@@ -101,6 +101,12 @@ export class GraphWebviewProvider {
         }
     }
 
+    public async postMessage(message: any) {
+        if (this.panel) {
+            await this.panel.webview.postMessage(message);
+        }
+    }
+
     private async sendGraphData() {
         if (!this.panel) {
             return;

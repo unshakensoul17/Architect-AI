@@ -49,6 +49,10 @@
       {
         "command": "codeIndexer.refineGraph",
         "title": "Code Indexer: Refine Graph with AI (Architect Pass)"
+      },
+      {
+        "command": "architect.viewDirectory",
+        "title": "Architect: View Module Graph"
       }
     ],
     "configuration": {
@@ -73,6 +77,15 @@
           "description": "Enable LSP-based symbol resolution for 100% accurate type definitions (TypeScript/JavaScript). Uses VS Code's built-in language server."
         }
       }
+    },
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "architect.viewDirectory",
+          "group": "navigation",
+          "when": "explorerResourceIsFolder"
+        }
+      ]
     }
   },
   "scripts": {

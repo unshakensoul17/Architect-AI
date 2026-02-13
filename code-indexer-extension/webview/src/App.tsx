@@ -3,6 +3,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import GraphCanvas from './components/GraphCanvas';
 import { InspectorPanel } from './components/inspector';
 import { useInspectorStore } from './stores/useInspectorStore';
+import { useGraphStore } from './stores/useGraphStore';
 import type { GraphData, VSCodeAPI, ExtensionMessage, WebviewMessage } from './types';
 import type { NodeType } from './types/inspector';
 import { PerformanceMonitor } from './utils/performance';
@@ -11,8 +12,17 @@ import { PerformanceMonitor } from './utils/performance';
 const vscode: VSCodeAPI = window.acquireVsCodeApi();
 
 function App() {
-    const [graphData, setGraphData] = useState<GraphData | null>(null);
-    const [loading, setLoading] = useState(true);
+    const {
+        displayedGraphData,
+        originalGraphData,
+        isLoading,
+        setGraphData,
+        filterByDirectory
+    } = useGraphStore();
+
+    // Local loading state for initial load or refresh
+    const [isRefreshing, setIsRefreshing] = useState(false);
+
     const [showInspector, setShowInspector] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
     const fpsRef = useRef<HTMLDivElement>(null);
@@ -48,7 +58,13 @@ function App() {
                     if (message.data) {
                         setGraphData(message.data);
                         (window as any).graphData = message.data;
-                        setLoading(false);
+                        setIsRefreshing(false);
+                    }
+                    break;
+
+                case 'filter-by-directory':
+                    if (message.path) {
+                        filterByDirectory(message.path);
                     }
                     break;
 
@@ -70,7 +86,7 @@ function App() {
         return () => {
             window.removeEventListener('message', handleMessage);
         };
-    }, []);
+    }, [setGraphData, filterByDirectory]);
 
     // Determine node type from node ID pattern
     const getNodeType = useCallback((nodeId: string): NodeType => {
@@ -103,10 +119,10 @@ function App() {
 
             // Notify extension
             const message: WebviewMessage = {
-                type: 'node-selected',
+                type: 'node-selected-webview',
                 nodeId,
-            };
-            vscode.postMessage(message);
+            } as any; // Using 'any' briefly to bypass type check if needed, but optimally update types.ts
+            vscode.postMessage({ type: 'node-selected', nodeId });
         },
         [selectNode, getNodeType]
     );
@@ -120,7 +136,7 @@ function App() {
     }, []);
 
     const handleRefresh = useCallback(() => {
-        setLoading(true);
+        setIsRefreshing(true);
         const message: WebviewMessage = { type: 'request-graph' };
         vscode.postMessage(message);
     }, []);
@@ -145,6 +161,8 @@ function App() {
     const handleToggleInspector = useCallback(() => {
         setShowInspector((prev) => !prev);
     }, []);
+
+    const showLoading = isLoading || (originalGraphData === null && isRefreshing) || (originalGraphData === null && !displayedGraphData);
 
     return (
         <div className="w-full h-full flex flex-col">
@@ -171,10 +189,10 @@ function App() {
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                     />
-                    {graphData && (
+                    {displayedGraphData && (
                         <div className="text-xs opacity-70">
-                            {graphData.domains.length} domains · {graphData.symbols.length} symbols ·{' '}
-                            {graphData.edges.length} edges
+                            {displayedGraphData.domains?.length || 0} domains · {displayedGraphData.symbols.length} symbols ·{' '}
+                            {displayedGraphData.edges.length} edges
                         </div>
                     )}
                 </div>
@@ -218,9 +236,9 @@ function App() {
                             backgroundColor: 'var(--vscode-button-background)',
                             color: 'var(--vscode-button-foreground)',
                         }}
-                        disabled={loading}
+                        disabled={isRefreshing}
                     >
-                        {loading ? 'Loading...' : 'Refresh'}
+                        {isRefreshing ? 'Loading...' : 'Refresh'}
                     </button>
 
                     {/* Export Button */}
@@ -231,7 +249,7 @@ function App() {
                             backgroundColor: 'var(--vscode-button-secondaryBackground)',
                             color: 'var(--vscode-button-secondaryForeground)',
                         }}
-                        disabled={!graphData}
+                        disabled={!displayedGraphData}
                     >
                         Export PNG
                     </button>
@@ -242,7 +260,7 @@ function App() {
             <div className="flex-1 flex overflow-hidden">
                 {/* Graph Canvas */}
                 <div className="flex-1 overflow-hidden">
-                    {loading ? (
+                    {showLoading ? (
                         <div className="flex items-center justify-center w-full h-full">
                             <div className="text-center">
                                 <div className="text-lg font-semibold mb-2">Loading Graph...</div>
@@ -254,7 +272,7 @@ function App() {
                     ) : (
                         <ReactFlowProvider>
                             <GraphCanvas
-                                graphData={graphData}
+                                graphData={displayedGraphData}
                                 vscode={vscode}
                                 onNodeClick={handleNodeClick}
                                 searchQuery={searchQuery}

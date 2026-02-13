@@ -51,7 +51,8 @@ declare global {
 // Message types between extension and webview
 export type ExtensionMessage =
     | { type: 'graph-data'; data: GraphData }
-    | { type: 'theme-changed'; theme: 'light' | 'dark' };
+    | { type: 'theme-changed'; theme: 'light' | 'dark' }
+    | { type: 'filter-by-directory'; path: string };
 
 export type WebviewMessage =
     | { type: 'ready' }

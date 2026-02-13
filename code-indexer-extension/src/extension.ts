@@ -122,6 +122,16 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    context.subscriptions.push(
+        vscode.commands.registerCommand('architect.viewDirectory', async (uri: vscode.Uri) => {
+            if (uri && uri.fsPath) {
+                await viewDirectory(uri);
+            } else {
+                vscode.window.showErrorMessage('No directory selected');
+            }
+        })
+    );
+
     outputChannel.appendLine('Code Indexer extension activated');
 }
 
@@ -435,6 +445,33 @@ async function refineGraph() {
             }
         }
     );
+}
+
+/**
+ * View directory in graph
+ */
+async function viewDirectory(uri: vscode.Uri) {
+    if (!graphWebviewProvider) {
+        // If webview is not open, open it first
+        vscode.commands.executeCommand('codeIndexer.visualizeGraph');
+        // Give it a moment to initialize
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    if (graphWebviewProvider) {
+        // Ensure the webview is visible
+        await graphWebviewProvider.show();
+
+        // Send filter message
+        graphWebviewProvider.postMessage({
+            type: 'filter-by-directory',
+            path: uri.fsPath
+        });
+
+        vscode.window.showInformationMessage(`Filtering graph by directory: ${path.basename(uri.fsPath)}`);
+    } else {
+        vscode.window.showErrorMessage('Failed to open graph webview');
+    }
 }
 
 /**
