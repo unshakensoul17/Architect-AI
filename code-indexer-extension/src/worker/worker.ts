@@ -265,6 +265,14 @@ class IndexWorker {
                     this.handleRefineIncremental(request.id, request.changedFiles);
                     break;
 
+                case 'get-architecture-skeleton':
+                    this.handleArchitectureSkeleton(request.id);
+                    break;
+
+                case 'trace-function':
+                    this.handleTraceFunction(request.id, request.symbolId, request.nodeId);
+                    break;
+
                 default:
                     this.sendError((request as any).id, `Unknown request type: ${(request as any).type}`);
             }
@@ -755,12 +763,11 @@ class IndexWorker {
                 }
             }
 
-            // 2. Call AI Orchestrator
-            if (Object.keys(fullSkeleton).length === 0) {
-                this.sendError(id, 'No code files found in index. Please run "Index Workspace" first.');
-                return;
-            }
+            // 2. Optimized Domain Classification Pass (Macro)
+            const architectureSkeleton = this.db.getArchitectureSkeleton();
+            await this.orchestrator.classifyDomainsWithSkeleton(architectureSkeleton);
 
+            // 3. Deep Symbol Refinement (Micro - in batches)
             const refinedData = await this.orchestrator.refineSystemGraph(fullSkeleton);
 
             // 3. Update Symbols in DB
@@ -1036,6 +1043,70 @@ class IndexWorker {
 
         } catch (error) {
             this.sendError(id, `Incremental refinement failed: ${(error as Error).message}`);
+        }
+    }
+
+    /**
+     * Handle architecture skeleton request
+     */
+    private handleArchitectureSkeleton(id: string): void {
+        if (!this.db) {
+            this.sendError(id, 'Database not initialized');
+            return;
+        }
+
+        try {
+            const skeleton = this.db.getArchitectureSkeleton();
+            this.sendMessage({
+                type: 'architecture-skeleton',
+                id,
+                skeleton
+            });
+        } catch (error) {
+            this.sendError(id, `Failed to get architecture skeleton: ${(error as Error).message}`);
+        }
+    }
+
+    /**
+     * Handle function trace request
+     */
+    private handleTraceFunction(id: string, symbolId?: number, nodeId?: string): void {
+        if (!this.db) {
+            this.sendError(id, 'Database not initialized');
+            return;
+        }
+
+        try {
+            let targetId = symbolId;
+
+            // Resolve Node ID if no Symbol ID provided
+            if (!targetId && nodeId) {
+                const parts = nodeId.split(':');
+                if (parts.length >= 3) {
+                    const line = parseInt(parts[parts.length - 1], 10);
+                    const symbolName = parts[parts.length - 2];
+                    const filePath = parts.slice(0, -2).join(':');
+
+                    const symbol = this.db.getSymbolByLocation(filePath, symbolName, line);
+                    if (symbol) {
+                        targetId = symbol.id;
+                    }
+                }
+            }
+
+            if (!targetId) {
+                this.sendError(id, 'Invalid symbol ID or Node ID. Symbol not found.');
+                return;
+            }
+
+            const trace = this.db.getFunctionTrace(targetId);
+            this.sendMessage({
+                type: 'function-trace',
+                id,
+                trace
+            });
+        } catch (error) {
+            this.sendError(id, `Failed to trace function: ${(error as Error).message}`);
         }
     }
 }

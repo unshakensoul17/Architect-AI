@@ -3,7 +3,7 @@
  * Supports 4 analysis modes: Architecture, Flow, Risk, and Impact
  */
 
-export type ViewMode = 'architecture' | 'flow' | 'risk' | 'impact';
+export type ViewMode = 'architecture' | 'flow' | 'trace';
 
 export interface ViewState {
     currentMode: ViewMode;
@@ -104,32 +104,29 @@ export interface FilterContext {
     searchQuery?: string;
 }
 
+export type LayoutDirection = 'DOWN' | 'RIGHT';
+
 // Layout configuration per mode
 export interface LayoutModeConfig {
-    direction: 'DOWN' | 'RIGHT' | 'UP' | 'LEFT';
+    direction: LayoutDirection;
     nodeSpacing: number;
     layerSpacing: number;
 }
 
-export const MODE_LAYOUT_CONFIGS: Record<ViewMode, LayoutModeConfig> = {
+export const LAYOUT_CONFIG: Record<ViewMode, LayoutModeConfig> = {
     architecture: {
-        direction: 'DOWN',
-        nodeSpacing: 60,
-        layerSpacing: 100,
-    },
-    flow: {
-        direction: 'RIGHT',
-        nodeSpacing: 80,
-        layerSpacing: 120,
-    },
-    risk: {
         direction: 'DOWN',
         nodeSpacing: 50,
         layerSpacing: 80,
     },
-    impact: {
-        direction: 'DOWN',
+    flow: {
+        direction: 'RIGHT',
         nodeSpacing: 60,
         layerSpacing: 100,
+    },
+    trace: {
+        direction: 'RIGHT',
+        nodeSpacing: 80,
+        layerSpacing: 120,
     },
 };

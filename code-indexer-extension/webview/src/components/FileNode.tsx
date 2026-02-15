@@ -6,6 +6,8 @@ export interface FileNodeData extends Record<string, unknown> {
     filePath: string;
     symbolCount: number;
     avgCoupling: number;
+    avgFragility?: number;
+    totalBlastRadius?: number;
     collapsed: boolean;
     // Progressive visibility states
     isDimmed?: boolean;
@@ -114,18 +116,36 @@ const FileNode = memo(({ data }: NodeProps<Node<FileNodeData>>) => {
                         <span className="opacity-70">Symbols:</span>
                         <span className="font-semibold">{symbolCount}</span>
                     </div>
-                    <div className="flex items-center justify-between">
-                        <span className="opacity-70">Avg Coupling:</span>
-                        <span
-                            className="font-semibold px-2 py-0.5 rounded"
-                            style={{
-                                backgroundColor: borderColor + '40',
-                                color: borderColor,
-                            }}
-                        >
-                            {(avgCoupling * 100).toFixed(0)}%
-                        </span>
-                    </div>
+                    {data.avgFragility !== undefined && (
+                        <div className="flex items-center justify-between mb-1" title="Complexity * Fan-out">
+                            <span className="opacity-70">Avg Fragility:</span>
+                            <span className="font-semibold" style={{ color: data.avgFragility > 50 ? '#ef4444' : '#fbbf24' }}>
+                                {data.avgFragility.toFixed(1)}
+                            </span>
+                        </div>
+                    )}
+                    {data.totalBlastRadius !== undefined && (
+                        <div className="flex items-center justify-between mb-1" title="Recursive impact (symbols depending on this file)">
+                            <span className="opacity-70">Blast Radius:</span>
+                            <span className="font-semibold text-red-500">
+                                {data.totalBlastRadius}
+                            </span>
+                        </div>
+                    )}
+                    {avgCoupling > 0 && (
+                        <div className="flex items-center justify-between">
+                            <span className="opacity-70">Avg Coupling:</span>
+                            <span
+                                className="font-semibold px-2 py-0.5 rounded"
+                                style={{
+                                    backgroundColor: borderColor + '40',
+                                    color: borderColor,
+                                }}
+                            >
+                                {(avgCoupling * 100).toFixed(0)}%
+                            </span>
+                        </div>
+                    )}
                 </div>
             )}
 

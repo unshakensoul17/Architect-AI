@@ -51,12 +51,16 @@ declare global {
 // Message types between extension and webview
 export type ExtensionMessage =
     | { type: 'graph-data'; data: GraphData }
+    | { type: 'architecture-skeleton'; data: ArchitectureSkeleton }
+    | { type: 'function-trace'; data: FunctionTrace }
     | { type: 'theme-changed'; theme: 'light' | 'dark' }
     | { type: 'filter-by-directory'; path: string };
 
 export type WebviewMessage =
     | { type: 'ready' }
     | { type: 'request-graph' }
+    | { type: 'request-architecture-skeleton' }
+    | { type: 'request-function-trace'; symbolId?: number; nodeId?: string }
     | { type: 'node-selected'; nodeId: string }
     | { type: 'export-image'; format: 'png' | 'svg' };
 
@@ -76,6 +80,8 @@ export interface FileNodeData extends Record<string, unknown> {
     filePath: string;
     symbolCount: number;
     avgCoupling: number;
+    avgFragility?: number;
+    totalBlastRadius?: number;
     collapsed: boolean;
     // Progressive visibility states
     isDimmed?: boolean;
@@ -88,7 +94,8 @@ export interface SymbolNodeData extends Record<string, unknown> {
     label: string;
     symbolType: GraphSymbol['type'];
     complexity: number;
-    coupling: CouplingMetrics;
+    blastRadius?: number;
+    coupling?: CouplingMetrics;
     filePath: string;
     line: number;
     // Progressive visibility states
@@ -122,4 +129,50 @@ export interface GraphData {
     edges: GraphEdge[];
     files: GraphFile[];
     domains: { domain: string; symbolCount: number; health: DomainHealth }[];
+}
+
+// Architecture Skeleton
+export interface ArchitectureSkeleton {
+    nodes: SkeletonNodeData[];
+    edges: SkeletonEdge[];
+}
+
+export interface SkeletonNodeData {
+    id: string; // filePath
+    name: string; // basename
+    type: 'file';
+    symbolCount: number;
+    avgComplexity: number;
+    avgFragility?: number;
+    totalBlastRadius?: number;
+}
+
+export interface SkeletonEdge {
+    source: string; // filePath
+    target: string; // filePath
+    weight: number; // import/call count
+}
+
+// Function Trace
+export interface FunctionTrace {
+    symbolId: number;
+    nodes: TraceNode[];
+    edges: TraceEdge[];
+}
+
+export interface TraceNode {
+    id: string; // "filePath:name:line" or similar
+    label: string;
+    type: string; // function, class, etc.
+    filePath: string;
+    line: number;
+    isSink: boolean; // DB or API call
+    depth: number; // relative to target
+    blastRadius?: number;
+}
+
+export interface TraceEdge {
+    source: string;
+    target: string;
+    type: 'call' | 'import';
 }

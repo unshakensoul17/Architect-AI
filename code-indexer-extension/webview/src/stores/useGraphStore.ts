@@ -1,15 +1,22 @@
 import { create } from 'zustand';
-import { GraphData, GraphSymbol, GraphEdge } from '../types';
+import { GraphData, GraphSymbol, GraphEdge, ArchitectureSkeleton, FunctionTrace } from '../types';
+import { ViewMode } from '../types/viewMode';
 
 interface GraphState {
     originalGraphData: GraphData | null;
     displayedGraphData: GraphData | null;
+    architectureSkeleton: ArchitectureSkeleton | null;
+    functionTrace: FunctionTrace | null;
+    viewMode: ViewMode;
     filterPath: string | null;
     isLoading: boolean;
     collapsedNodes: Set<string>;
 
     // Actions
     setGraphData: (data: GraphData) => void;
+    setArchitectureSkeleton: (data: ArchitectureSkeleton) => void;
+    setFunctionTrace: (data: FunctionTrace) => void;
+    setViewMode: (mode: ViewMode) => void;
     filterByDirectory: (path: string) => void;
     clearFilter: () => void;
     setLoading: (loading: boolean) => void;
@@ -21,6 +28,9 @@ interface GraphState {
 export const useGraphStore = create<GraphState>((set, get) => ({
     originalGraphData: null,
     displayedGraphData: null,
+    architectureSkeleton: null,
+    functionTrace: null,
+    viewMode: 'architecture',
     filterPath: null,
     isLoading: false,
     collapsedNodes: new Set<string>(),
@@ -40,6 +50,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
             collapsedNodes: initialCollapsed
         });
     },
+
+    setArchitectureSkeleton: (data) => set({ architectureSkeleton: data }),
+    setFunctionTrace: (data) => set({ functionTrace: data }),
+    setViewMode: (mode) => set({ viewMode: mode }),
 
     filterByDirectory: (targetPath: string) => {
         const { originalGraphData } = get();

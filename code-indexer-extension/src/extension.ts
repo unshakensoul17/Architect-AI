@@ -8,12 +8,13 @@ import * as fs from 'fs';
 import { WorkerManager } from './worker/worker-manager';
 import { FileWatcherManager } from './file-watcher';
 import { GraphWebviewProvider } from './webview-provider';
-import { HeatCodeLensProvider } from './codelens-provider';
+import { HeatCodeLensProvider, TraceCodeLensProvider } from './codelens-provider';
 
 let workerManager: WorkerManager | null = null;
 let fileWatcherManager: FileWatcherManager | null = null;
 let graphWebviewProvider: GraphWebviewProvider | null = null;
 let heatCodeLensProvider: HeatCodeLensProvider | null = null;
+let traceCodeLensProvider: TraceCodeLensProvider | null = null;
 let outputChannel: vscode.OutputChannel;
 
 /**
@@ -41,20 +42,22 @@ export async function activate(context: vscode.ExtensionContext) {
         // Initialize webview provider
         graphWebviewProvider = new GraphWebviewProvider(context, workerManager);
 
-        // Initialize CodeLens provider
+        // Initialize CodeLens providers
         heatCodeLensProvider = new HeatCodeLensProvider(workerManager);
+        traceCodeLensProvider = new TraceCodeLensProvider(workerManager);
+
+        const supportedLanguages = [
+            { scheme: 'file', language: 'typescript' },
+            { scheme: 'file', language: 'typescriptreact' },
+            { scheme: 'file', language: 'python' },
+            { scheme: 'file', language: 'c' }
+        ];
+
         context.subscriptions.push(
-            vscode.languages.registerCodeLensProvider(
-                [
-                    { scheme: 'file', language: 'typescript' },
-                    { scheme: 'file', language: 'typescriptreact' },
-                    { scheme: 'file', language: 'python' },
-                    { scheme: 'file', language: 'c' }
-                ],
-                heatCodeLensProvider
-            )
+            vscode.languages.registerCodeLensProvider(supportedLanguages, heatCodeLensProvider),
+            vscode.languages.registerCodeLensProvider(supportedLanguages, traceCodeLensProvider)
         );
-        outputChannel.appendLine('CodeLens provider registered');
+        outputChannel.appendLine('CodeLens providers registered');
 
         // Configure AI
         await updateWorkerConfig();
@@ -128,6 +131,14 @@ export async function activate(context: vscode.ExtensionContext) {
                 await viewDirectory(uri);
             } else {
                 vscode.window.showErrorMessage('No directory selected');
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('architect.traceFunction', async (symbolId?: number, nodeId?: string) => {
+            if (graphWebviewProvider) {
+                await graphWebviewProvider.traceSymbol(symbolId, nodeId);
             }
         })
     );

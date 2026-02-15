@@ -2,7 +2,7 @@
 // Ensures strict contracts between extension host and worker thread
 // Prevents malformed requests and simplifies debugging
 
-import { GraphExport } from '../db/database';
+import { GraphExport, ArchitectureSkeleton, FunctionTrace } from '../db/database';
 
 /**
  * Messages sent from extension host to worker
@@ -135,6 +135,16 @@ export type WorkerRequest =
         type: 'refine-incremental';
         id: string;
         changedFiles: string[];  // File paths that were just re-indexed
+    }
+    | {
+        type: 'get-architecture-skeleton';
+        id: string;
+    }
+    | {
+        type: 'trace-function';
+        id: string;
+        symbolId?: number;
+        nodeId?: string;
     };
 
 /**
@@ -281,6 +291,16 @@ export type WorkerResponse =
         id: string;
         refinedNodeCount: number;
         filesProcessed: number;
+    }
+    | {
+        type: 'architecture-skeleton';
+        id: string;
+        skeleton: ArchitectureSkeleton;
+    }
+    | {
+        type: 'function-trace';
+        id: string;
+        trace: FunctionTrace;
     };
 
 /**
@@ -368,6 +388,7 @@ export interface InspectorAIResult {
         diff: string;
     };
 }
+
 
 /**
  * Type guard to check if message is a WorkerRequest

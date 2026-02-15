@@ -4,7 +4,7 @@
 
 import Database from 'better-sqlite3';
 import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { eq, like } from 'drizzle-orm';
+import { eq, like, and } from 'drizzle-orm';
 import { symbols, edges, files, meta, aiCache, NewSymbol, NewEdge, Symbol, Edge, File, SymbolContext, AICacheEntry } from './schema';
 import { computeDomainHealth, type DomainHealth } from '../domain/health';
 import * as crypto from 'crypto';
@@ -42,6 +42,56 @@ export interface GraphExport {
         symbolCount: number;
         health: DomainHealth;
     }[];
+}
+
+/**
+ * Architecture Skeleton (Macro View)
+ */
+export interface ArchitectureSkeleton {
+    nodes: SkeletonNodeData[];
+    edges: SkeletonEdge[];
+}
+
+export interface SkeletonNodeData {
+    id: string; // filePath
+    name: string; // basename
+    type: 'file';
+    symbolCount: number;
+    avgComplexity: number;
+    avgFragility?: number;
+    totalBlastRadius?: number;
+}
+
+export interface SkeletonEdge {
+    source: string; // filePath
+    target: string; // filePath
+    weight: number; // import/call count
+}
+
+/**
+ * Function Trace (Micro View)
+ */
+export interface FunctionTrace {
+    symbolId: number;
+    nodes: TraceNode[];
+    edges: TraceEdge[];
+}
+
+export interface TraceNode {
+    id: string; // "filePath:name:line" or similar
+    label: string;
+    type: string; // function, class, etc.
+    filePath: string;
+    line: number;
+    isSink: boolean; // DB or API call
+    depth: number; // relative to target
+    blastRadius?: number;
+}
+
+export interface TraceEdge {
+    source: string;
+    target: string;
+    type: 'call' | 'import';
 }
 
 export class CodeIndexDatabase {
@@ -318,6 +368,25 @@ export class CodeIndexDatabase {
     }
 
     // ========== Context Assembly (cAST) ==========
+
+    /**
+     * Get symbol by exact location
+     */
+    getSymbolByLocation(filePath: string, name: string, line: number): Symbol | null {
+        const symbol = this.drizzle
+            .select()
+            .from(symbols)
+            .where(
+                and(
+                    eq(symbols.filePath, filePath),
+                    eq(symbols.name, name),
+                    eq(symbols.rangeStartLine, line)
+                )
+            )
+            .get();
+
+        return symbol || null;
+    }
 
     /**
      * Symbol context including code and neighbors for AI prompts
@@ -798,7 +867,6 @@ export class CodeIndexDatabase {
             domain: r.domain,
             healthScore: r.health_score,
             complexity: r.complexity,
-            coupling: r.coupling,
             symbolCount: r.symbol_count,
             lastUpdated: r.last_updated,
         }));
@@ -816,12 +884,221 @@ export class CodeIndexDatabase {
     }
 
     /**
+     * Calculate fragility for a symbol: Complexity * Out-Degree
+     */
+    calculateFragility(symbolId: number): number {
+        const symbol = this.getSymbolById(symbolId);
+        if (!symbol) return 0;
+
+        const outEdges = this.db.prepare('SELECT COUNT(*) as count FROM edges WHERE source_id = ?').get(symbolId) as { count: number };
+        const coupling = outEdges.count || 0;
+
+        return symbol.complexity * (coupling + 1); // +1 to ensure isolated complex nodes have a baseline fragility
+    }
+
+    /**
+     * Calculate Blast Radius: Recursive count of symbols that depend on this one
+     */
+    calculateBlastRadius(symbolId: number, maxDepth: number = 5): number {
+        const visited = new Set<number>();
+        const queue: { id: number; depth: number }[] = [{ id: symbolId, depth: 0 }];
+
+        while (queue.length > 0) {
+            const { id, depth } = queue.shift()!;
+            if (visited.has(id)) continue;
+            visited.add(id);
+
+            if (depth < maxDepth) {
+                const callers = this.db.prepare('SELECT source_id FROM edges WHERE target_id = ?').all(id) as { source_id: number }[];
+                for (const caller of callers) {
+                    queue.push({ id: caller.source_id, depth: depth + 1 });
+                }
+            }
+        }
+
+        return visited.size - 1; // Don't count the starting symbol itself
+    }
+
+    // ========== Architecture Skeleton (Macro View) ==========
+
+    /**
+     * Get validated or generate new Architecture Skeleton
+     */
+    getArchitectureSkeleton(): ArchitectureSkeleton {
+        const cached = this.getMeta('architecture_skeleton');
+        if (cached) {
+            try {
+                return JSON.parse(cached);
+            } catch (e) {
+                console.error('Failed to parse cached skeleton', e);
+            }
+        }
+
+        const skeleton = this.generateArchitectureSkeleton();
+        this.setMeta('architecture_skeleton', JSON.stringify(skeleton));
+        return skeleton;
+    }
+
+    private generateArchitectureSkeleton(): ArchitectureSkeleton {
+        // 1. Aggregated File Nodes
+        const files = this.db.prepare(`SELECT DISTINCT file_path FROM symbols`).all() as { file_path: string }[];
+
+        const nodes: SkeletonNodeData[] = [];
+
+        for (const f of files) {
+            const symbolsInFile = this.db.prepare(`SELECT id, complexity FROM symbols WHERE file_path = ?`).all(f.file_path) as { id: number; complexity: number }[];
+
+            let totalComplexity = 0;
+            let totalFragility = 0;
+            let maxBlastRadius = 0;
+
+            for (const s of symbolsInFile) {
+                totalComplexity += s.complexity;
+                totalFragility += this.calculateFragility(s.id);
+                const br = this.calculateBlastRadius(s.id);
+                if (br > maxBlastRadius) maxBlastRadius = br;
+            }
+
+            nodes.push({
+                id: f.file_path,
+                name: path.basename(f.file_path),
+                type: 'file',
+                symbolCount: symbolsInFile.length,
+                avgComplexity: symbolsInFile.length > 0 ? Math.round((totalComplexity / symbolsInFile.length) * 10) / 10 : 0,
+                avgFragility: symbolsInFile.length > 0 ? Math.round((totalFragility / symbolsInFile.length) * 10) / 10 : 0,
+                totalBlastRadius: maxBlastRadius // We'll use max blast radius to represent file sensitivity
+            });
+        }
+
+        // 2. Aggregated File Edges
+        const edgeStats = this.db.prepare(`
+            SELECT 
+                s1.file_path as source_file,
+                s2.file_path as target_file,
+                COUNT(*) as weight
+            FROM edges e
+            JOIN symbols s1 ON e.source_id = s1.id
+            JOIN symbols s2 ON e.target_id = s2.id
+            WHERE s1.file_path != s2.file_path
+            GROUP BY s1.file_path, s2.file_path
+        `).all() as { source_file: string; target_file: string; weight: number }[];
+
+        const edgesList: SkeletonEdge[] = edgeStats.map(stat => ({
+            source: stat.source_file,
+            target: stat.target_file,
+            weight: stat.weight
+        }));
+
+        return { nodes, edges: edgesList };
+    }
+
+    // ========== Function Trace (Micro View) ==========
+
+    getFunctionTrace(symbolId: number): FunctionTrace {
+        const rootSymbol = this.getSymbolById(symbolId);
+        if (!rootSymbol) {
+            throw new Error(`Symbol not found: ${symbolId}`);
+        }
+
+        const nodes = new Map<string, TraceNode>();
+        const traceEdges: TraceEdge[] = [];
+        const visitedEdges = new Set<string>();
+
+        // BFS State
+        const queue: { id: number; depth: number }[] = [{ id: symbolId, depth: 0 }];
+        const visited = new Set<number>();
+
+        while (queue.length > 0) {
+            const { id, depth } = queue.shift()!;
+            if (visited.has(id)) continue;
+            visited.add(id);
+
+            // Depth limits: 1 level up, 3 levels down
+            if (depth < -1 || depth > 3) continue;
+
+            const symbol = this.getSymbolById(id);
+            if (!symbol) continue;
+
+            // Add Node
+            const nodeId = `${symbol.filePath}:${symbol.name}:${symbol.rangeStartLine}`;
+            if (!nodes.has(nodeId)) {
+                // Heuristic for "sink"
+                const nameLower = symbol.name.toLowerCase();
+                const isSink =
+                    (symbol.type === 'class' && (symbol.name.includes('DB') || symbol.name.includes('Service') || symbol.name.includes('Client'))) ||
+                    nameLower.includes('fetch') ||
+                    nameLower.includes('query') ||
+                    nameLower.includes('execute') ||
+                    nameLower.includes('request') ||
+                    nameLower.includes('send') ||
+                    symbol.filePath.includes('api') ||
+                    symbol.filePath.includes('db');
+
+                nodes.set(nodeId, {
+                    id: nodeId,
+                    label: symbol.name,
+                    type: symbol.type,
+                    filePath: symbol.filePath,
+                    line: symbol.rangeStartLine,
+                    isSink,
+                    depth,
+                    blastRadius: this.calculateBlastRadius(id)
+                });
+            }
+
+            // Downstream (Callees)
+            if (depth >= 0) {
+                const outEdges = this.drizzle.select().from(edges).where(eq(edges.sourceId, id)).all();
+                for (const edge of outEdges) {
+                    const target = this.getSymbolById(edge.targetId);
+                    if (target) {
+                        const targetId = `${target.filePath}:${target.name}:${target.rangeStartLine}`;
+                        const edgeKey = `${nodeId}->${targetId}`;
+
+                        if (!visitedEdges.has(edgeKey)) {
+                            traceEdges.push({ source: nodeId, target: targetId, type: edge.type as any });
+                            visitedEdges.add(edgeKey);
+                        }
+
+                        queue.push({ id: edge.targetId, depth: depth + 1 });
+                    }
+                }
+            }
+
+            // Upstream (Callers)
+            if (depth <= 0) {
+                const inEdges = this.drizzle.select().from(edges).where(eq(edges.targetId, id)).all();
+                for (const edge of inEdges) {
+                    const source = this.getSymbolById(edge.sourceId);
+                    if (source) {
+                        const sourceId = `${source.filePath}:${source.name}:${source.rangeStartLine}`;
+                        const edgeKey = `${sourceId}->${nodeId}`;
+
+                        if (!visitedEdges.has(edgeKey)) {
+                            traceEdges.push({ source: sourceId, target: nodeId, type: edge.type as any });
+                            visitedEdges.add(edgeKey);
+                        }
+
+                        queue.push({ id: edge.sourceId, depth: depth - 1 });
+                    }
+                }
+            }
+        }
+
+        return {
+            symbolId,
+            nodes: Array.from(nodes.values()),
+            edges: traceEdges
+        };
+    }
+
+    /**
      * Get cached domain classification
      */
     getDomainCache(symbolId: number): { domain: string; confidence: number } | null {
         const result = this.db.prepare(`
             SELECT domain, confidence FROM domain_cache WHERE symbol_id = ?
-        `).get(symbolId) as any;
+            `).get(symbolId) as any;
 
         return result || null;
     }
@@ -832,11 +1109,11 @@ export class CodeIndexDatabase {
     getFilesByDomain(domain: string): File[] {
         // Find files that have at least one symbol in this domain
         const result = this.db.prepare(`
-            SELECT DISTINCT f.* 
-            FROM files f
+            SELECT DISTINCT f.*
+        FROM files f
             JOIN symbols s ON s.file_path = f.file_path
             WHERE s.domain = ?
-        `).all(domain) as any[];
+            `).all(domain) as any[];
 
         return result.map(row => ({
             id: row.id,
@@ -868,11 +1145,11 @@ export class CodeIndexDatabase {
         const stats = this.db.prepare(`
             SELECT 
                 COUNT(*) as symbol_count,
-                SUM(CASE WHEN type IN ('function', 'method', 'constructor') THEN 1 ELSE 0 END) as function_count,
-                AVG(complexity) as avg_complexity
+            SUM(CASE WHEN type IN('function', 'method', 'constructor') THEN 1 ELSE 0 END) as function_count,
+            AVG(complexity) as avg_complexity
             FROM symbols
             WHERE file_path = ?
-        `).get(filePath) as any;
+            `).get(filePath) as any;
 
         // Note: import/export counts would require analyzing edges which is expensive here
         // We'll return 0 for now and let the inspector service calculate it if needed via edges
@@ -914,7 +1191,7 @@ export class CodeIndexDatabase {
         const updateStmt = this.db.prepare(`
             UPDATE symbols 
             SET purpose = ?, impact_depth = ?, search_tags = ?, fragility = ?,
-                risk_score = ?, risk_reason = ?
+                risk_score = ?, risk_reason = ?, domain = ?
             WHERE id = ?
         `);
 
@@ -927,6 +1204,7 @@ export class CodeIndexDatabase {
                     item.metadata.fragility || null,
                     item.metadata.riskScore ?? null,
                     item.metadata.riskReason || null,
+                    item.metadata.domain || null,
                     item.id
                 );
             }
@@ -941,9 +1219,9 @@ export class CodeIndexDatabase {
     insertTechnicalDebt(items: { symbolId: number; smellType: string; severity: string; description: string }[]): void {
         const now = new Date().toISOString();
         const insertStmt = this.db.prepare(`
-            INSERT INTO technical_debt (symbol_id, smell_type, severity, description, detected_at)
-            VALUES (?, ?, ?, ?, ?)
-        `);
+            INSERT INTO technical_debt(symbol_id, smell_type, severity, description, detected_at)
+            VALUES(?, ?, ?, ?, ?)
+                `);
 
         const transaction = this.db.transaction(() => {
             // Clear existing debt items first
@@ -962,7 +1240,7 @@ export class CodeIndexDatabase {
     getTechnicalDebt(symbolId: number): { smellType: string; severity: string; description: string }[] {
         const results = this.db.prepare(`
             SELECT smell_type, severity, description FROM technical_debt WHERE symbol_id = ?
-        `).all(symbolId) as any[];
+            `).all(symbolId) as any[];
 
         return results.map(r => ({
             smellType: r.smell_type,
@@ -978,7 +1256,7 @@ export class CodeIndexDatabase {
         const results = this.db.prepare(`
             SELECT symbol_id, smell_type, severity, description FROM technical_debt
             ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
-        `).all() as any[];
+            `).all() as any[];
 
         return results.map(r => ({
             symbolId: r.symbol_id,

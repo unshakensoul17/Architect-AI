@@ -44,6 +44,14 @@ export class GraphWebviewProvider {
                         await this.sendGraphData();
                         break;
 
+                    case 'request-architecture-skeleton':
+                        await this.sendArchitectureSkeleton();
+                        break;
+
+                    case 'request-function-trace':
+                        await this.sendFunctionTrace(message.symbolId, message.nodeId);
+                        break;
+
                     case 'node-selected':
                         await this.handleNodeSelected(message.nodeId);
                         break;
@@ -101,6 +109,13 @@ export class GraphWebviewProvider {
         }
     }
 
+    public async traceSymbol(symbolId?: number, nodeId?: string) {
+        await this.show();
+        if (this.panel) {
+            await this.sendFunctionTrace(symbolId, nodeId);
+        }
+    }
+
     public async postMessage(message: any) {
         if (this.panel) {
             await this.panel.webview.postMessage(message);
@@ -126,6 +141,32 @@ export class GraphWebviewProvider {
             vscode.window.showErrorMessage(
                 `Failed to load graph data: ${error instanceof Error ? error.message : String(error)}`
             );
+        }
+    }
+
+    private async sendArchitectureSkeleton() {
+        if (!this.panel) return;
+        try {
+            const skeleton = await this.workerManager.getArchitectureSkeleton();
+            this.panel.webview.postMessage({
+                type: 'architecture-skeleton',
+                data: skeleton
+            });
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to get architecture skeleton: ${error}`);
+        }
+    }
+
+    private async sendFunctionTrace(symbolId?: number, nodeId?: string) {
+        if (!this.panel) return;
+        try {
+            const trace = await this.workerManager.traceFunction(symbolId, nodeId);
+            this.panel.webview.postMessage({
+                type: 'function-trace',
+                data: trace
+            });
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to trace function: ${error}`);
         }
     }
 

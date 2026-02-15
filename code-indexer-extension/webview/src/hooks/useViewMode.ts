@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { ViewMode, ViewState, ImpactStats } from '../types/viewMode';
 import type { VSCodeAPI } from '../types';
+import { useGraphStore } from '../stores/useGraphStore';
 
 /**
  * Global View Mode Hook
@@ -21,7 +22,12 @@ interface UseViewModeReturn {
 }
 
 export function useViewMode(vscode: VSCodeAPI, searchQuery?: string): UseViewModeReturn {
-    const [currentMode, setCurrentMode] = useState<ViewMode>('architecture');
+    // Check if viewMode is already set in store or load from vscode state
+    const currentMode = useGraphStore(s => s.viewMode);
+    const setViewMode = useGraphStore(s => s.setViewMode);
+
+    // Local state for focus/impact (kept local to component usage for now?)
+    // Actually, GraphCanvas uses this hook.
     const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
     const [relatedNodeIds, setRelatedNodeIds] = useState<Set<string>>(new Set());
     const [impactStats, setImpactStats] = useState<ImpactStats | null>(null);
@@ -30,22 +36,20 @@ export function useViewMode(vscode: VSCodeAPI, searchQuery?: string): UseViewMod
     useEffect(() => {
         const savedState = vscode.getState();
         if (savedState?.viewMode) {
-            setCurrentMode(savedState.viewMode);
+            setViewMode(savedState.viewMode);
         }
-    }, [vscode]);
+    }, [vscode, setViewMode]);
 
     // Switch view mode and persist
     const switchMode = useCallback(
         (mode: ViewMode) => {
-            setCurrentMode(mode);
+            setViewMode(mode);
             vscode.setState({ viewMode: mode });
 
-            // Reset focused node when switching modes (except for impact mode)
-            if (mode !== 'impact') {
-                setFocusedNodeId(null);
-                setRelatedNodeIds(new Set());
-                setImpactStats(null);
-            }
+            // Reset focused node when switching modes
+            setFocusedNodeId(null);
+            setRelatedNodeIds(new Set());
+            setImpactStats(null);
         },
         [vscode]
     );

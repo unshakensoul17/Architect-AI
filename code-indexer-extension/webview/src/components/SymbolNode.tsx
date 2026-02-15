@@ -6,6 +6,8 @@ export interface SymbolNodeData extends Record<string, unknown> {
     label: string;
     symbolType: 'function' | 'method' | 'class' | 'interface' | 'enum' | 'variable' | 'type';
     complexity: number;
+    blastRadius?: number;
+    isSink?: boolean;
     coupling: CouplingMetrics;
     filePath: string;
     line: number;
@@ -89,7 +91,12 @@ const SymbolNode = memo(({ data }: NodeProps<Node<SymbolNodeData>>) => {
                     </div>
                     <div className="text-[10px] opacity-70 flex items-center gap-2">
                         <span title={`Complexity: ${complexity}`}>C:{complexity}</span>
-                        <span title={`Coupling: ${coupling.cbo}`}>CBO:{coupling.cbo}</span>
+                        {data.blastRadius !== undefined && (
+                            <span title={`Blast Radius (Symbols depending on this)`} className="text-red-400 font-bold">
+                                BR:{data.blastRadius}
+                            </span>
+                        )}
+                        <span title={`Coupling (CBO): ${coupling.cbo}`}>CBO:{coupling.cbo}</span>
                     </div>
                 </div>
                 {isHighlighted && (
@@ -104,6 +111,12 @@ const SymbolNode = memo(({ data }: NodeProps<Node<SymbolNodeData>>) => {
                     </div>
                 )}
             </div>
+
+            {data.isSink && (
+                <div className="mt-2 text-[9px] font-bold text-red-500 bg-red-500/20 px-1.5 py-0.5 rounded text-center uppercase tracking-wider border border-red-500/30">
+                    Sink
+                </div>
+            )}
 
             <Handle type="source" position={Position.Bottom} className="w-2 h-2" />
         </div>

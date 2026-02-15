@@ -7,7 +7,7 @@ import { GroqClient, createGroqClient } from './groq-client';
 import { VertexClient, createVertexClient } from './vertex-client';
 import { GeminiClient, createGeminiClient } from './gemini-client';
 import { MCPServer, MCPToolCall, MCPToolResponse } from './mcp/server';
-import { CodeIndexDatabase } from '../db/database';
+import { CodeIndexDatabase, ArchitectureSkeleton } from '../db/database';
 import { SymbolContext } from '../db/schema';
 import { DomainClassification, DomainType } from '../domain/classifier';
 import { DOMAIN_DESCRIPTIONS } from './mcp/domain-tools';
@@ -561,6 +561,78 @@ Choose the most appropriate domain based on the symbol's purpose and context.`;
         }
     }
     // } removed to keep methods inside class
+
+    /**
+     * Optimized Domain Classification using the Architecture Skeleton (JSON 1)
+     * Categorizes files into domains and generates high-level summaries.
+     */
+    async classifyDomainsWithSkeleton(skeleton: ArchitectureSkeleton): Promise<void> {
+        const client = this.geminiClient || this.vertexClient || this.groqClient;
+        if (!client) return;
+
+        console.log(`[Orchestrator] Starting Domain Classification with ${skeleton.nodes.length} files`);
+
+        const domainsList = Object.entries(DOMAIN_DESCRIPTIONS)
+            .map(([domain, desc]) => `- ${domain}: ${desc}`)
+            .join('\n');
+
+        const systemPrompt = `You are a Principal Software Architect.
+Examine the following file-level Architecture Skeleton and categorize each file into a Domain.
+
+DOMAINS:
+${domainsList}
+
+RULES:
+1. Return a JSON object mapping 'filePath' to its classification.
+2. For each file, provide a 'domain' and a 'summary' (max 20 words).
+3. Use the file names and connection weights (dependencies) to infer the domain.
+
+RETURN FORMAT:
+{
+  "classifications": [
+    {
+      "filePath": "path/to/file.ts",
+      "domain": "DOMAIN_NAME",
+      "summary": "Brief technical summary"
+    }
+  ]
+}`;
+
+        const skeletonJson = JSON.stringify(skeleton);
+        const prompt = `Skeleton Data:\n${skeletonJson}`;
+
+        try {
+            const response = await client.complete(prompt, systemPrompt);
+            const content = response.content;
+
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const result = JSON.parse(jsonMatch[0]);
+                if (result.classifications) {
+                    console.log(`[Orchestrator] Domain classification complete: ${result.classifications.length} files processed`);
+
+                    // Update DB - We'll need to update symbols in these files
+                    // For each file, update all symbols within it to that domain
+                    for (const item of result.classifications) {
+                        const symbolsInFile = this.db.getSymbolsByFile(item.filePath);
+                        const updates = symbolsInFile.map(s => ({
+                            id: s.id,
+                            metadata: {
+                                domain: item.domain,
+                                purpose: item.summary
+                            }
+                        }));
+
+                        // We need to ensure database.ts can handle 'domain' update in metadata
+                        // Actually let's use a specific method or update the metadata structure
+                        this.db.updateSymbolsMetadata(updates);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('[Orchestrator] Domain classification with skeleton failed:', error);
+        }
+    }
 
     /**
      * Architect Pass: Refine system graph using Gemini 1.5 Pro

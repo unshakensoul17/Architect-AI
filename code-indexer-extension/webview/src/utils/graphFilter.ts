@@ -73,13 +73,38 @@ export function applyViewMode(
             return filterArchitectureMode(allNodes, allEdges, context);
         case 'flow':
             return filterFlowMode(allNodes, allEdges, context);
-        case 'risk':
-            return filterRiskMode(allNodes, allEdges, context);
-        case 'impact':
-            return filterImpactMode(allNodes, allEdges, context);
+        case 'trace':
+            return filterTraceMode(allNodes, allEdges, context);
         default:
             return { visibleNodes: allNodes, visibleEdges: allEdges };
     }
+}
+
+/**
+ * Trace Mode: Show only nodes in the active function trace
+ */
+function filterTraceMode(
+    allNodes: Node[],
+    allEdges: Edge[],
+    _context: FilterContext
+): FilteredGraph {
+    // In trace mode, the trace nodes are usually the only ones passed in
+    // or we identify them by the symbols present.
+    // However, to be safe, we filter for nodes that are NOT domains/files
+    // unless they are specifically part of the trace (which they shouldn't be in micro view)
+    const visibleNodes = allNodes.filter(n => n.type === 'symbolNode').map(node => ({
+        ...node,
+        data: {
+            ...node.data,
+            opacity: 1.0,
+            isHighlighted: false,
+        }
+    }));
+
+    const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
+    const visibleEdges = allEdges.filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target));
+
+    return { visibleNodes, visibleEdges };
 }
 
 /**
@@ -300,237 +325,7 @@ function filterFlowMode(
  * Risk Mode: Highlight dangerous code
  * Purpose: Find fragile code
  */
-function filterRiskMode(
-    allNodes: Node[],
-    allEdges: Edge[],
-    context: FilterContext
-): FilteredGraph {
-    const { riskThresholds } = context;
 
-    const visibleNodes = allNodes.map((node) => {
-        const riskScore = calculateNodeRisk(node, riskThresholds);
-        const isHighRisk = riskScore > 0.6;
-        const isMediumRisk = riskScore > 0.3 && riskScore <= 0.6;
-
-        let glowColor: string | undefined;
-        if (isHighRisk) {
-            glowColor = '#ef4444'; // Red
-        } else if (isMediumRisk) {
-            glowColor = '#f97316'; // Orange
-        }
-
-        const targetOpacity = isHighRisk || isMediumRisk ? 1.0 : 0.3;
-        const currentOpacity = (node.data as any)?.opacity;
-        const currentGlow = (node.data as any)?.glowColor;
-        const currentRiskScore = (node.data as any)?.riskScore;
-        const currentHighlight = (node.data as any)?.isHighlighted;
-
-        // Skip cloning if state hasn't changed (check all properties)
-        if (currentOpacity === targetOpacity &&
-            currentGlow === glowColor &&
-            currentRiskScore === riskScore &&
-            currentHighlight === (isHighRisk || isMediumRisk)) {
-            return node;
-        }
-
-        return {
-            ...node,
-            data: {
-                ...node.data,
-                opacity: targetOpacity,
-                isHighlighted: isHighRisk || isMediumRisk,
-                glowColor,
-                riskScore,
-                disableHeatmap: false,
-            },
-            style: {
-                ...node.style,
-                opacity: targetOpacity,
-                boxShadow: glowColor ? `0 0 20px ${glowColor}` : undefined,
-            },
-        };
-    });
-
-    // Only clone edges if opacity needs to change
-    const nodeMap = new Map(allNodes.map(n => [n.id, n]));
-    const visibleEdges = allEdges.map((edge) => {
-        const targetNode = nodeMap.get(edge.target);
-        const targetDomain = (targetNode?.data as any)?.domain;
-        const baseStyle = DEFAULT_EDGE_STYLE(targetDomain);
-
-        return {
-            ...edge,
-            ...baseStyle,
-            style: {
-                ...baseStyle.style,
-                opacity: 0.3,
-            },
-        };
-    });
-
-    return { visibleNodes, visibleEdges };
-}
-
-/**
- * Impact Mode: Show blast radius
- * Purpose: Safe refactoring
- */
-function filterImpactMode(
-    allNodes: Node[],
-    allEdges: Edge[],
-    context: FilterContext
-): FilteredGraph {
-    const { focusedNodeId, relatedNodeIds } = context;
-
-    if (!focusedNodeId) {
-        // No node selected, show everything dimmed
-        const visibleNodes = allNodes.map((node) => {
-            const currentOpacity = (node.data as any)?.opacity;
-            if (currentOpacity === 0.4) {
-                return node;
-            }
-
-            return {
-                ...node,
-                data: {
-                    ...node.data,
-                    opacity: 0.4,
-                    isHighlighted: false,
-                },
-                style: {
-                    ...node.style,
-                    opacity: 0.4,
-                },
-            };
-        });
-
-        return { visibleNodes, visibleEdges: allEdges };
-    }
-
-    // Highlight focused node and related nodes
-    const visibleNodes = allNodes.map((node) => {
-        const isFocused = node.id === focusedNodeId;
-        const isRelated = relatedNodeIds.has(node.id);
-        const targetOpacity = isFocused || isRelated ? 1.0 : 0.15;
-
-        // Use AI impact depth for styling if available
-        let borderColor: string | undefined;
-        let borderWidth: string | undefined;
-
-        if (isRelated) {
-            const depth = (node.data as any)?.impactDepth || 0;
-            if (depth >= 8) {
-                borderColor = '#ef4444'; // Red for high impact
-                borderWidth = '2px';
-            } else if (depth >= 5) {
-                borderColor = '#f97316'; // Orange for medium impact
-                borderWidth = '2px';
-            }
-        }
-        if (isFocused) {
-            borderColor = '#3b82f6';
-            borderWidth = '3px';
-        }
-
-        const currentOpacity = (node.data as any)?.opacity;
-        const currentFocused = (node.data as any)?.isFocused;
-        const currentHighlight = (node.data as any)?.isHighlighted;
-
-        // Skip cloning if state hasn't changed (approximate check)
-        if (currentOpacity === targetOpacity &&
-            currentFocused === isFocused &&
-            currentHighlight === (isFocused || isRelated) &&
-            node.style?.borderColor === borderColor) {
-            return node;
-        }
-
-        return {
-            ...node,
-            data: {
-                ...node.data,
-                opacity: targetOpacity,
-                isHighlighted: isFocused || isRelated,
-                isFocused,
-            },
-            style: {
-                ...node.style,
-                opacity: targetOpacity,
-                border: borderColor ? `${borderWidth || '1px'} solid ${borderColor}` : undefined,
-            },
-        };
-    });
-
-    // Label edges with impact direction
-    const nodeMap = new Map(allNodes.map(n => [n.id, n]));
-    const visibleEdges = allEdges.map((edge) => {
-        const isImpactEdge =
-            (edge.source === focusedNodeId && relatedNodeIds.has(edge.target)) ||
-            (edge.target === focusedNodeId && relatedNodeIds.has(edge.source));
-
-        let label: string | undefined;
-        if (isImpactEdge) {
-            if (edge.source === focusedNodeId) {
-                label = '→ downstream';
-            } else if (edge.target === focusedNodeId) {
-                label = '← upstream';
-            }
-        }
-
-        const targetNode = nodeMap.get(edge.target);
-        const targetDomain = (targetNode?.data as any)?.domain;
-        const baseStyle = DEFAULT_EDGE_STYLE(targetDomain);
-
-        const targetOpacity = isImpactEdge ? 1.0 : 0.15;
-        const targetStrokeWidth = isImpactEdge ? 2.5 : 1;
-
-        return {
-            ...edge,
-            ...baseStyle,
-            label,
-            style: {
-                ...baseStyle.style,
-                strokeWidth: targetStrokeWidth,
-                opacity: targetOpacity,
-            },
-            markerEnd: {
-                ...baseStyle.markerEnd,
-                width: isImpactEdge ? 20 : 15,
-                height: isImpactEdge ? 20 : 15,
-            }
-        };
-    });
-
-    return { visibleNodes, visibleEdges };
-}
-
-/**
- * Calculate risk score for a node (0-1)
- */
-function calculateNodeRisk(node: Node, thresholds: FilterContext['riskThresholds']): number {
-    // For domain nodes
-    if (node.type === 'domainNode') {
-        const data = node.data as DomainNodeData;
-        const health = data.health?.status;
-
-        if (health === 'critical') return 1.0;
-        if (health === 'warning') return 0.5;
-        return 0.1;
-    }
-
-    // For symbol nodes
-    if (node.type === 'symbolNode') {
-        const data = node.data as SymbolNodeData;
-        const complexity = data.complexity || 0;
-        const coupling = data.coupling?.normalizedScore || 0;
-
-        const complexityScore = complexity > thresholds.complexity ? 0.5 : 0;
-        const couplingScore = coupling > thresholds.coupling ? 0.5 : 0;
-
-        return Math.min(1.0, complexityScore + couplingScore);
-    }
-
-    return 0;
-}
 
 /**
  * Hook: Memoized graph filtering
@@ -571,29 +366,7 @@ export function getNodeVisibilityState(
             };
         }
 
-        case 'risk': {
-            const riskScore = calculateNodeRisk(node, context.riskThresholds);
-            const isHighRisk = riskScore > 0.6;
-            const isMediumRisk = riskScore > 0.3 && riskScore <= 0.6;
 
-            return {
-                isVisible: true,
-                opacity: isHighRisk || isMediumRisk ? 1.0 : 0.3,
-                isHighlighted: isHighRisk || isMediumRisk,
-                glowColor: isHighRisk ? '#ef4444' : isMediumRisk ? '#f97316' : undefined,
-            };
-        }
-
-        case 'impact': {
-            const isFocused = node.id === context.focusedNodeId;
-            const isRelated = context.relatedNodeIds.has(node.id);
-
-            return {
-                isVisible: true,
-                opacity: isFocused || isRelated ? 1.0 : 0.15,
-                isHighlighted: isFocused || isRelated,
-            };
-        }
 
         default:
             return {

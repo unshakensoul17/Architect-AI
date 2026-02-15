@@ -10,7 +10,7 @@ import {
     SymbolResult,
     IndexStats,
 } from './message-protocol';
-import { GraphExport } from '../db/database';
+import { GraphExport, ArchitectureSkeleton, FunctionTrace } from '../db/database';
 
 interface PendingRequest {
     resolve: (response: WorkerResponse) => void;
@@ -413,6 +413,40 @@ export class WorkerManager {
                 this.worker.terminate();
             }
         }, 1000);
+    }
+
+    /**
+     * Get architecture skeleton (Macro View)
+     */
+    async getArchitectureSkeleton(): Promise<ArchitectureSkeleton> {
+        const response = await this.sendRequest({
+            type: 'get-architecture-skeleton',
+            id: this.generateId(),
+        });
+
+        if (response.type !== 'architecture-skeleton') {
+            throw new Error('Unexpected response type');
+        }
+
+        return response.skeleton;
+    }
+
+    /**
+     * Trace function (Micro View)
+     */
+    async traceFunction(symbolId?: number, nodeId?: string): Promise<FunctionTrace> {
+        const response = await this.sendRequest({
+            type: 'trace-function',
+            id: this.generateId(),
+            symbolId,
+            nodeId
+        });
+
+        if (response.type !== 'function-trace') {
+            throw new Error('Unexpected response type');
+        }
+
+        return response.trace;
     }
 
     /**

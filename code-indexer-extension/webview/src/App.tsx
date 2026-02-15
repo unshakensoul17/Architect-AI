@@ -17,7 +17,11 @@ function App() {
         originalGraphData,
         isLoading,
         setGraphData,
-        filterByDirectory
+        setArchitectureSkeleton,
+        setFunctionTrace,
+        setViewMode,
+        filterByDirectory,
+        viewMode
     } = useGraphStore();
 
     // Local loading state for initial load or refresh
@@ -62,6 +66,19 @@ function App() {
                     }
                     break;
 
+                case 'architecture-skeleton':
+                    if (message.data) {
+                        setArchitectureSkeleton(message.data);
+                    }
+                    break;
+
+                case 'function-trace':
+                    if (message.data) {
+                        setFunctionTrace(message.data);
+                        setViewMode('trace');
+                    }
+                    break;
+
                 case 'filter-by-directory':
                     if (message.path) {
                         filterByDirectory(message.path);
@@ -80,13 +97,20 @@ function App() {
         const readyMessage: WebviewMessage = { type: 'ready' };
         vscode.postMessage(readyMessage);
 
-        const requestMessage: WebviewMessage = { type: 'request-graph' };
-        vscode.postMessage(requestMessage);
+        vscode.postMessage({ type: 'request-architecture-skeleton' });
 
         return () => {
             window.removeEventListener('message', handleMessage);
         };
-    }, [setGraphData, filterByDirectory]);
+    }, [setGraphData, setArchitectureSkeleton, setFunctionTrace, filterByDirectory, setViewMode]);
+
+    // Load full graph data when switching to complex views if not already loaded
+    useEffect(() => {
+        if ((viewMode === 'flow') && !originalGraphData && !isRefreshing) {
+            setIsRefreshing(true);
+            vscode.postMessage({ type: 'request-graph' });
+        }
+    }, [viewMode, originalGraphData, isRefreshing]);
 
     // Determine node type from node ID pattern
     const getNodeType = useCallback((nodeId: string): NodeType => {

@@ -168,6 +168,29 @@ const InspectorPanel = memo(({ vscode, onClose, onFocusNode }: InspectorPanelPro
             {/* Scrollable Content */}
             <div className="inspector-content">
                 <SelectionHeader />
+                {nodeType === 'symbol' && (
+                    <div style={{ padding: '0 16px 16px' }}>
+                        <button
+                            className="vscode-button"
+                            onClick={() => {
+                                if (selectedId) {
+                                    vscode.postMessage({ type: 'request-function-trace', nodeId: selectedId });
+                                }
+                            }}
+                            style={{
+                                width: '100%',
+                                padding: '6px',
+                                backgroundColor: 'var(--vscode-button-background)',
+                                color: 'var(--vscode-button-foreground)',
+                                border: 'none',
+                                borderRadius: '2px',
+                                cursor: 'pointer'
+                            }}
+                        >
+                            Trace Function (Micro View)
+                        </button>
+                    </div>
+                )}
                 <OverviewSection />
                 <DependenciesSection onDependencyClick={handleDependencyClick} />
                 <RisksHealthSection vscode={vscode} />
