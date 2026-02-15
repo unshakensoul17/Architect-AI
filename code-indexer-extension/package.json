@@ -35,6 +35,10 @@
         "title": "Code Indexer: Export Graph as JSON"
       },
       {
+        "command": "codeIndexer.exportArchitectureSkeleton",
+        "title": "Code Indexer: Export Architecture Skeleton as JSON"
+      },
+      {
         "command": "codeIndexer.toggleFileWatcher",
         "title": "Code Indexer: Toggle File Watcher"
       },
@@ -84,6 +88,26 @@
           "command": "architect.viewDirectory",
           "group": "navigation",
           "when": "explorerResourceIsFolder"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "architect-ai-sidebar-view",
+          "title": "Architect AI",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "architect-ai-sidebar-view": [
+        {
+          "type": "webview",
+          "id": "architect-ai-sidebar",
+          "name": "Navigate",
+          "icon": "resources/icon.svg",
+          "contextualTitle": "Architect AI"
         }
       ]
     }

@@ -35,7 +35,9 @@ export function useViewMode(vscode: VSCodeAPI, searchQuery?: string): UseViewMod
     // Load persisted state on mount
     useEffect(() => {
         const savedState = vscode.getState();
-        if (savedState?.viewMode) {
+        // Only restore from state if we are currently in the default architecture mode
+        // This prevents overwriting an explicit mode requested during initialization (like 'trace')
+        if (savedState?.viewMode && useGraphStore.getState().viewMode === 'architecture') {
             setViewMode(savedState.viewMode);
         }
     }, [vscode, setViewMode]);

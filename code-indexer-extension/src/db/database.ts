@@ -86,6 +86,7 @@ export interface TraceNode {
     isSink: boolean; // DB or API call
     depth: number; // relative to target
     blastRadius?: number;
+    complexity: number;
 }
 
 export interface TraceEdge {
@@ -1042,7 +1043,8 @@ export class CodeIndexDatabase {
                     line: symbol.rangeStartLine,
                     isSink,
                     depth,
-                    blastRadius: this.calculateBlastRadius(id)
+                    blastRadius: this.calculateBlastRadius(id),
+                    complexity: symbol.complexity
                 });
             }
 

@@ -61,7 +61,7 @@ const SymbolNode = memo(({ data }: NodeProps<Node<SymbolNodeData>>) => {
 
     return (
         <div
-            className="px-3 py-2 rounded-lg shadow-md min-w-[140px] max-w-[200px]"
+            className="nopan px-3 py-2 rounded-lg shadow-md min-w-[140px] max-w-[200px]"
             style={{
                 backgroundColor: coupling.color + '20',
                 borderColor: coupling.color,

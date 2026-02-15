@@ -21,7 +21,9 @@ function App() {
         setFunctionTrace,
         setViewMode,
         filterByDirectory,
-        viewMode
+        viewMode,
+        functionTrace,
+        architectureSkeleton
     } = useGraphStore();
 
     // Local loading state for initial load or refresh
@@ -96,8 +98,6 @@ function App() {
         // Request graph data on mount
         const readyMessage: WebviewMessage = { type: 'ready' };
         vscode.postMessage(readyMessage);
-
-        vscode.postMessage({ type: 'request-architecture-skeleton' });
 
         return () => {
             window.removeEventListener('message', handleMessage);
@@ -186,7 +186,7 @@ function App() {
         setShowInspector((prev) => !prev);
     }, []);
 
-    const showLoading = isLoading || (originalGraphData === null && isRefreshing) || (originalGraphData === null && !displayedGraphData);
+    const showLoading = isLoading || (originalGraphData === null && isRefreshing) || (originalGraphData === null && !displayedGraphData && !(viewMode === 'trace' && functionTrace) && !(viewMode === 'architecture' && architectureSkeleton));
 
     return (
         <div className="w-full h-full flex flex-col">

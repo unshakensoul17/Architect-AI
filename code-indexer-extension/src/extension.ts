@@ -9,6 +9,7 @@ import { WorkerManager } from './worker/worker-manager';
 import { FileWatcherManager } from './file-watcher';
 import { GraphWebviewProvider } from './webview-provider';
 import { HeatCodeLensProvider, TraceCodeLensProvider } from './codelens-provider';
+import { SidebarProvider } from './sidebar-provider';
 
 let workerManager: WorkerManager | null = null;
 let fileWatcherManager: FileWatcherManager | null = null;
@@ -59,6 +60,15 @@ export async function activate(context: vscode.ExtensionContext) {
         );
         outputChannel.appendLine('CodeLens providers registered');
 
+        // Initialize Sidebar Provider
+        const sidebarProvider = new SidebarProvider(context.extensionUri);
+        context.subscriptions.push(
+            vscode.window.registerWebviewViewProvider(
+                'architect-ai-sidebar',
+                sidebarProvider
+            )
+        );
+
         // Configure AI
         await updateWorkerConfig();
 
@@ -98,6 +108,12 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('codeIndexer.exportGraph', async () => {
             await exportGraph();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('codeIndexer.exportArchitectureSkeleton', async () => {
+            await exportArchitectureSkeleton();
         })
     );
 
@@ -385,6 +401,45 @@ async function exportGraph() {
     } catch (error) {
         vscode.window.showErrorMessage(`Export failed: ${error}`);
         outputChannel.appendLine(`Export failed: ${error}`);
+    }
+}
+
+/**
+ * Export architecture skeleton command
+ */
+async function exportArchitectureSkeleton() {
+    if (!workerManager) {
+        vscode.window.showErrorMessage('Worker not initialized');
+        return;
+    }
+
+    try {
+        const skeleton = await workerManager.getArchitectureSkeleton();
+
+        // Create output file path
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const outputPath = workspaceFolder
+            ? path.join(workspaceFolder.uri.fsPath, 'architecture-skeleton.json')
+            : path.join(require('os').tmpdir(), 'architecture-skeleton.json');
+
+        // Write to file
+        fs.writeFileSync(outputPath, JSON.stringify(skeleton, null, 2), 'utf-8');
+
+        // Show success and open file
+        const result = await vscode.window.showInformationMessage(
+            `Architecture skeleton exported to ${outputPath}`,
+            'Open File'
+        );
+
+        if (result === 'Open File') {
+            const doc = await vscode.workspace.openTextDocument(outputPath);
+            await vscode.window.showTextDocument(doc);
+        }
+
+        outputChannel.appendLine(`Architecture skeleton exported: ${skeleton.nodes.length} files, ${skeleton.edges.length} connections`);
+    } catch (error) {
+        vscode.window.showErrorMessage(`Skeleton export failed: ${error}`);
+        outputChannel.appendLine(`Skeleton export failed: ${error}`);
     }
 }
 

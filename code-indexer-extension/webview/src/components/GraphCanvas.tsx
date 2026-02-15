@@ -127,7 +127,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     data: {
                         label: n.label,
                         symbolType: n.type as any,
-                        complexity: 0,
+                        complexity: n.complexity,
                         blastRadius: n.blastRadius,
                         filePath: n.filePath,
                         line: n.line,
@@ -136,14 +136,19 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     } as SymbolNodeData,
                 }));
 
-                const edges: Edge[] = functionTrace.edges.map((e, i) => ({
-                    id: `trace-edge-${i}`,
-                    source: e.source,
-                    target: e.target,
-                    type: 'smoothstep',
-                    animated: true,
-                    style: { stroke: '#3b82f6' }
-                }));
+                const edges: Edge[] = functionTrace.edges.map((e, i) => {
+                    const targetNode = functionTrace.nodes.find(n => n.id === e.target);
+                    const isTargetComplex = targetNode ? targetNode.complexity > 10 : false;
+
+                    return {
+                        id: `trace-edge-${i}`,
+                        source: e.source,
+                        target: e.target,
+                        type: 'smoothstep',
+                        animated: true,
+                        style: { stroke: isTargetComplex ? '#ef4444' : '#3b82f6' }
+                    };
+                });
 
                 setAllNodes(nodes);
                 setAllEdges(edges);
@@ -528,6 +533,24 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         [onNodeClick, setFocusedNodeId, focusNode]
     );
 
+    // Handle node double click to open file
+    const handleNodeDoubleClick = useCallback(
+        (_event: React.MouseEvent, node: Node) => {
+            if (node.type === 'symbolNode' || node.type === 'fileNode' || node.type === 'file') {
+                // Verify data exists
+                const data = node.data as any;
+                if (data.filePath) {
+                    vscode.postMessage({
+                        type: 'open-file',
+                        filePath: data.filePath,
+                        line: data.line || 0
+                    });
+                }
+            }
+        },
+        [vscode]
+    );
+
     // Handle mode change
     const handleModeChange = useCallback(
         (mode: ViewMode) => {
@@ -555,7 +578,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         return (node.data as any).coupling?.color || '#6b7280';
     }, []);
 
-    if (!graphData) {
+    if (!graphData && !(currentMode === 'trace' && functionTrace) && !(currentMode === 'architecture' && architectureSkeleton)) {
         if (currentMode === 'trace' && !functionTrace) {
             return (
                 <div className="flex items-center justify-center w-full h-full">
@@ -611,6 +634,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     onNodesChange={onNodesChange}
                     onEdgesChange={onEdgesChange}
                     onNodeClick={handleNodeClick}
+                    onNodeDoubleClick={handleNodeDoubleClick}
                     onNodeMouseEnter={handleNodeMouseEnter}
                     onNodeMouseLeave={handleNodeMouseLeave}
                     nodeTypes={nodeTypes}
@@ -618,9 +642,10 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     maxZoom={2}
                     nodesDraggable={false}
                     nodesConnectable={false}
-                    elementsSelectable={false}
+                    elementsSelectable={true}
                     onlyRenderVisibleElements={true}
                     elevateEdgesOnSelect={false}
+                    zoomOnDoubleClick={false}
                     defaultEdgeOptions={{
                         type: 'default',
                     }}

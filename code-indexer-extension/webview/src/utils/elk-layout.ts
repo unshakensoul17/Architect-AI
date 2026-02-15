@@ -26,12 +26,71 @@ export async function applyElkLayout(
         layerSpacing = 100,
     } = options;
 
-    // Separate nodes by type
-    const domainNodes = nodes.filter((n) => n.type === 'domainNode');
-    const fileNodes = nodes.filter((n) => n.type === 'fileNode');
-    const symbolNodes = nodes.filter((n) => n.type === 'symbolNode');
+    // Build a map of nodes by ID to quickly find them during edge processing and layout mapping
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
 
-    // Create ELK graph structure with 3-level hierarchy
+    // Map of ELK nodes to build the hierarchy
+    const elkNodeMap = new Map<string, ElkNode>();
+
+    // 1. Create ELK nodes for every React Flow node
+    nodes.forEach(node => {
+        // Default sizes based on node type
+        let width = 180;
+        let height = 60;
+
+        if (node.type === 'domainNode') {
+            width = 500;
+            height = 300;
+        } else if (node.type === 'fileNode') {
+            width = 300;
+            height = 150;
+        }
+
+        const elkNode: ElkNode = {
+            id: node.id,
+            width,
+            height,
+            children: [],
+        };
+
+        // Add layout options based on type
+        if (node.type === 'domainNode') {
+            elkNode.layoutOptions = {
+                'elk.algorithm': 'layered',
+                'elk.direction': 'DOWN',
+                'elk.padding': '[top=80,left=30,bottom=30,right=30]',
+                'elk.spacing.nodeNode': '40',
+                'elk.layered.spacing.nodeNodeBetweenLayers': '60',
+                'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+                'elk.aspectRatio': '1.6',
+                'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+            };
+        } else if (node.type === 'fileNode') {
+            elkNode.layoutOptions = {
+                'elk.algorithm': 'layered',
+                'elk.direction': 'DOWN',
+                'elk.padding': '[top=60,left=20,bottom=20,right=20]',
+                'elk.spacing.nodeNode': '20',
+                'elk.layered.spacing.nodeNodeBetweenLayers': '40',
+                'elk.edgeRouting': 'SPLINES',
+            };
+        }
+
+        elkNodeMap.set(node.id, elkNode);
+    });
+
+    // 2. Build the hierarchy based on parentId
+    const rootChildren: ElkNode[] = [];
+    nodes.forEach(node => {
+        const elkNode = elkNodeMap.get(node.id)!;
+        if (node.parentId && elkNodeMap.has(node.parentId)) {
+            elkNodeMap.get(node.parentId)!.children!.push(elkNode);
+        } else {
+            rootChildren.push(elkNode);
+        }
+    });
+
+    // Create ELK graph structure
     const elkGraph: ElkNode = {
         id: 'root',
         layoutOptions: {
@@ -42,55 +101,11 @@ export async function applyElkLayout(
             'elk.layered.spacing.nodeNodeBetweenLayers': layerSpacing.toString(),
             'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
             'elk.padding': '[top=50,left=50,bottom=50,right=50]',
-            // Edge Bundling / Routing
-            'elk.edgeRouting': 'SPLINES', // Curves
-            'elk.layered.mergeEdges': 'true', // Merge similar edges
-            'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX', // Better vertical alignment
+            'elk.edgeRouting': 'SPLINES',
+            'elk.layered.mergeEdges': 'true',
+            'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
         },
-        children: domainNodes.map((domainNode) => ({
-            id: domainNode.id,
-            width: 500, // Larger minimum width for domain
-            height: 300, // Larger minimum height for domain
-            layoutOptions: {
-                'elk.algorithm': 'layered',
-                'elk.direction': 'DOWN',
-                'elk.padding': '[top=80,left=30,bottom=30,right=30]',
-                'elk.spacing.nodeNode': '40',
-                'elk.layered.spacing.nodeNodeBetweenLayers': '60',
-                'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-                // Try to make it roughly square/rectangular instead of one long line
-                'elk.aspectRatio': '1.6',
-                'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-            },
-            // Files as children of domains
-            children: fileNodes
-                .filter((f) => f.parentId === domainNode.id)
-                .map((fileNode) => ({
-                    id: fileNode.id,
-                    width: 300,
-                    height: 150,
-                    layoutOptions: {
-                        'elk.algorithm': 'layered', // Symbols usually have flow, so layered is good here
-                        'elk.direction': 'DOWN',
-                        'elk.padding': '[top=60,left=20,bottom=20,right=20]',
-                        'elk.spacing.nodeNode': '20',
-                        'elk.layered.spacing.nodeNodeBetweenLayers': '40',
-                        'elk.edgeRouting': 'SPLINES',
-                    },
-                    // Symbols as children of files
-                    children: symbolNodes
-                        .filter(
-                            (s) =>
-                                s.parentId === fileNode.id ||
-                                (s.data as any).filePath === fileNode.id
-                        )
-                        .map((symbolNode) => ({
-                            id: symbolNode.id,
-                            width: 180,
-                            height: 60,
-                        })),
-                })),
-        })),
+        children: rootChildren,
         edges: edges.map((edge) => ({
             id: edge.id,
             sources: [edge.source],
@@ -101,65 +116,37 @@ export async function applyElkLayout(
     // Calculate layout
     const layoutedGraph = await elk.layout(elkGraph);
 
-    // Build lookup maps for O(1) access during position mapping
-    const domainMap = new Map(domainNodes.map(n => [n.id, n]));
-    const fileMap = new Map(fileNodes.map(n => [n.id, n]));
-    const symbolMap = new Map(symbolNodes.map(n => [n.id, n]));
-
-    // Map positions back to React Flow nodes
+    // 3. Map positions back to React Flow nodes (flat list)
     const layoutedNodes: Node[] = [];
 
-    // Process domain nodes (top level)
-    layoutedGraph.children?.forEach((domainElkNode) => {
-        const originalDomainNode = domainMap.get(domainElkNode.id);
-        if (originalDomainNode) {
-            layoutedNodes.push({
-                ...originalDomainNode,
-                position: {
-                    x: domainElkNode.x ?? 0,
-                    y: domainElkNode.y ?? 0,
-                },
-                style: {
-                    ...originalDomainNode.style,
-                    width: domainElkNode.width,
-                    height: domainElkNode.height,
-                },
-            });
-        }
-
-        // Process file nodes (children of domains)
-        domainElkNode.children?.forEach((fileElkNode) => {
-            const originalFileNode = fileMap.get(fileElkNode.id);
-            if (originalFileNode) {
+    // Recursive function to traverse ELK graph and build layouted React Flow nodes
+    const mapNodes = (elkNodes: ElkNode[]) => {
+        elkNodes.forEach((elkNode) => {
+            const originalNode = nodeMap.get(elkNode.id);
+            if (originalNode) {
                 layoutedNodes.push({
-                    ...originalFileNode,
+                    ...originalNode,
                     position: {
-                        x: fileElkNode.x ?? 0,
-                        y: fileElkNode.y ?? 0,
+                        x: elkNode.x ?? 0,
+                        y: elkNode.y ?? 0,
                     },
                     style: {
-                        ...originalFileNode.style,
-                        width: fileElkNode.width,
-                        height: fileElkNode.height,
+                        ...originalNode.style,
+                        width: elkNode.width,
+                        height: elkNode.height,
                     },
                 });
             }
 
-            // Process symbol nodes (children of files)
-            fileElkNode.children?.forEach((symbolElkNode) => {
-                const originalSymbolNode = symbolMap.get(symbolElkNode.id);
-                if (originalSymbolNode) {
-                    layoutedNodes.push({
-                        ...originalSymbolNode,
-                        position: {
-                            x: symbolElkNode.x ?? 0,
-                            y: symbolElkNode.y ?? 0,
-                        },
-                    });
-                }
-            });
+            if (elkNode.children && elkNode.children.length > 0) {
+                mapNodes(elkNode.children);
+            }
         });
-    });
+    };
+
+    if (layoutedGraph.children) {
+        mapNodes(layoutedGraph.children);
+    }
 
     return { nodes: layoutedNodes, edges };
 }

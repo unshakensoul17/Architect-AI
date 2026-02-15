@@ -5,6 +5,8 @@ import type { WorkerManager } from './worker/worker-manager';
 export class GraphWebviewProvider {
     private panel: vscode.WebviewPanel | undefined;
     private disposables: vscode.Disposable[] = [];
+    private isReady = false;
+    private pendingTrace: { symbolId?: number, nodeId?: string } | null = null;
 
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -37,7 +39,15 @@ export class GraphWebviewProvider {
             async (message) => {
                 switch (message.type) {
                     case 'ready':
+                        this.isReady = true;
                         console.log('Webview ready');
+                        await this.sendGraphData();
+                        await this.sendArchitectureSkeleton();
+
+                        if (this.pendingTrace) {
+                            await this.sendFunctionTrace(this.pendingTrace.symbolId, this.pendingTrace.nodeId);
+                            this.pendingTrace = null;
+                        }
                         break;
 
                     case 'request-graph':
@@ -53,13 +63,18 @@ export class GraphWebviewProvider {
                         break;
 
                     case 'node-selected':
-                        await this.handleNodeSelected(message.nodeId);
+                        // Single click only selects the node in the webview (handled internally)
+                        // We don't open the file on single click anymore
                         break;
 
                     case 'export-image':
                         vscode.window.showInformationMessage(
                             `Export as ${message.format} - Feature coming soon!`
                         );
+                        break;
+
+                    case 'open-file':
+                        await this.openFile(message.filePath, message.line);
                         break;
 
                     // Inspector Panel message handlers
@@ -92,6 +107,8 @@ export class GraphWebviewProvider {
         this.panel.onDidDispose(
             () => {
                 this.panel = undefined;
+                this.isReady = false;
+                this.pendingTrace = null;
                 this.disposables.forEach((d) => d.dispose());
                 this.disposables = [];
             },
@@ -99,8 +116,7 @@ export class GraphWebviewProvider {
             this.disposables
         );
 
-        // Send initial graph data
-        await this.sendGraphData();
+        // Data will be sent when 'ready' message is received
     }
 
     public async refresh() {
@@ -110,9 +126,12 @@ export class GraphWebviewProvider {
     }
 
     public async traceSymbol(symbolId?: number, nodeId?: string) {
-        await this.show();
-        if (this.panel) {
+        if (this.panel && this.isReady) {
             await this.sendFunctionTrace(symbolId, nodeId);
+            this.panel.reveal(vscode.ViewColumn.One);
+        } else {
+            this.pendingTrace = { symbolId, nodeId };
+            await this.show();
         }
     }
 
@@ -170,22 +189,15 @@ export class GraphWebviewProvider {
         }
     }
 
-    private async handleNodeSelected(nodeId: string) {
-        // Parse node ID: "filePath:symbolName:line"
-        const parts = nodeId.split(':');
-        if (parts.length < 3) {
-            return;
-        }
 
-        const line = parseInt(parts[parts.length - 1], 10);
-        const filePath = parts.slice(0, -2).join(':');
 
+    private async openFile(filePath: string, line: number) {
         try {
             const uri = vscode.Uri.file(filePath);
             const document = await vscode.workspace.openTextDocument(uri);
             const editor = await vscode.window.showTextDocument(document, {
-                viewColumn: vscode.ViewColumn.Two,
-                preserveFocus: false,
+                viewColumn: vscode.ViewColumn.Beside,
+                preserveFocus: true, // Keep focus on the graph so user can continue interacting
             });
 
             // Jump to line
