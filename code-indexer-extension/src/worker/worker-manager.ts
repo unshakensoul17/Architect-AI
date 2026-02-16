@@ -418,11 +418,12 @@ export class WorkerManager {
     /**
      * Get architecture skeleton (Macro View)
      */
-    async getArchitectureSkeleton(): Promise<ArchitectureSkeleton> {
+    async getArchitectureSkeleton(refine: boolean = false): Promise<ArchitectureSkeleton> {
         const response = await this.sendRequest({
             type: 'get-architecture-skeleton',
             id: this.generateId(),
-        });
+            refine,
+        }, refine ? 120000 : undefined); // Longer timeout if refining with AI
 
         if (response.type !== 'architecture-skeleton') {
             throw new Error('Unexpected response type');

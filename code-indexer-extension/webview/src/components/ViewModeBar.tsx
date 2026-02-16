@@ -6,9 +6,25 @@ interface ViewModeBarProps {
     onModeChange: (mode: ViewMode) => void;
     maxDepth: number;
     onDepthChange: (depth: number) => void;
+    // Architecture Mode Props
+    availableDomains?: string[];
+    selectedDomain?: string;
+    onSelectDomain?: (domain: string) => void;
+    sortBy?: 'name' | 'complexity' | 'fragility' | 'blastRadius';
+    onSortChange?: (sort: any) => void;
 }
 
-const ViewModeBar = memo(({ currentMode, onModeChange, maxDepth, onDepthChange }: ViewModeBarProps) => {
+const ViewModeBar = memo(({
+    currentMode,
+    onModeChange,
+    maxDepth,
+    onDepthChange,
+    availableDomains = [],
+    selectedDomain = 'All',
+    onSelectDomain,
+    sortBy = 'name',
+    onSortChange
+}: ViewModeBarProps) => {
     const modes: Array<{ id: ViewMode; label: string; icon: string; description: string }> = [
         {
             id: 'architecture',
@@ -76,7 +92,7 @@ const ViewModeBar = memo(({ currentMode, onModeChange, maxDepth, onDepthChange }
                     <span>{mode.label}</span>
                 </button>
             ))}
-            {currentMode === 'flow' && (
+            {(currentMode === 'flow' || currentMode === 'architecture') && (
                 <div
                     style={{
                         marginLeft: 'auto',
@@ -111,7 +127,9 @@ const ViewModeBar = memo(({ currentMode, onModeChange, maxDepth, onDepthChange }
                             -
                         </button>
                         <span style={{ minWidth: '80px', textAlign: 'center', fontSize: '13px', fontWeight: '600' }}>
-                            {maxDepth === 0 ? 'Domains' : maxDepth === 1 ? 'Files' : 'Symbols'}
+                            {currentMode === 'architecture'
+                                ? (maxDepth === 0 ? 'Domains' : maxDepth === 1 ? 'Structure' : 'Detailed')
+                                : (maxDepth === 0 ? 'Domains' : maxDepth === 1 ? 'Files' : 'Symbols')}
                         </span>
                         <button
                             onClick={() => onDepthChange(Math.min(2, maxDepth + 1))}
@@ -133,6 +151,52 @@ const ViewModeBar = memo(({ currentMode, onModeChange, maxDepth, onDepthChange }
                             +
                         </button>
                     </div>
+                </div>
+            )}
+
+            {currentMode === 'architecture' && (
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: '12px' }}>
+                    {/* Domain Filter */}
+                    <select
+                        value={selectedDomain}
+                        onChange={(e) => onSelectDomain?.(e.target.value)}
+                        style={{
+                            padding: '6px 10px',
+                            borderRadius: '4px',
+                            border: '1px solid var(--vscode-dropdown-border)',
+                            backgroundColor: 'var(--vscode-dropdown-background)',
+                            color: 'var(--vscode-dropdown-foreground)',
+                            fontSize: '13px',
+                            cursor: 'pointer',
+                            outline: 'none'
+                        }}
+                    >
+                        <option value="All">All Domains</option>
+                        {availableDomains.map(d => (
+                            <option key={d} value={d}>{d}</option>
+                        ))}
+                    </select>
+
+                    {/* Sort Toggle */}
+                    <select
+                        value={sortBy}
+                        onChange={(e) => onSortChange?.(e.target.value)}
+                        style={{
+                            padding: '6px 10px',
+                            borderRadius: '4px',
+                            border: '1px solid var(--vscode-dropdown-border)',
+                            backgroundColor: 'var(--vscode-dropdown-background)',
+                            color: 'var(--vscode-dropdown-foreground)',
+                            fontSize: '13px',
+                            cursor: 'pointer',
+                            outline: 'none'
+                        }}
+                    >
+                        <option value="name">Sort: Name</option>
+                        <option value="complexity">Sort: Complexity</option>
+                        <option value="fragility">Sort: Fragility</option>
+                        <option value="blastRadius">Sort: Blast Radius</option>
+                    </select>
                 </div>
             )}
         </div>

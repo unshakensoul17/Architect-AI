@@ -176,6 +176,15 @@ export class GraphWebviewProvider {
         }
     }
 
+    public refreshArchitectureSkeleton(skeleton: any) {
+        if (this.panel) {
+            this.panel.webview.postMessage({
+                type: 'architecture-skeleton',
+                data: skeleton
+            });
+        }
+    }
+
     private async sendFunctionTrace(symbolId?: number, nodeId?: string) {
         if (!this.panel) return;
         try {

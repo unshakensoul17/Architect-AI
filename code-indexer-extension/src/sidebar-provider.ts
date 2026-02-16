@@ -25,6 +25,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     vscode.commands.executeCommand('codeIndexer.visualizeGraph');
                     break;
                 }
+                case 'refine-architecture': {
+                    vscode.commands.executeCommand('codeIndexer.refineArchitecture');
+                    break;
+                }
             }
         });
     }
@@ -81,12 +85,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 			<body>
                 <h2>Architect AI</h2>
                 <p>Visualize and analyze your codebase architecture.</p>
-				<button class="button" onclick="openGraph()">Open Architecture Graph</button>
+				                <button class="button" onclick="openGraph()">Open Architecture Graph</button>
+                <button class="button" onclick="refineArchitecture()" style="background-color: #6366f1;">✨ AI Semantic Renaming</button>
+                <p style="font-size: 11px; margin-top: 5px;">Uses Gemini to rename modules based on business logic.</p>
 
                 <script>
                     const vscode = acquireVsCodeApi();
                     function openGraph() {
                         vscode.postMessage({ type: 'open-graph' });
+                    }
+                    function refineArchitecture() {
+                        vscode.postMessage({ type: 'refine-architecture' });
                     }
                 </script>
 			</body>

@@ -3,7 +3,7 @@
 // Prevents VS Code UI freezing
 
 import { parentPort } from 'worker_threads';
-import { CodeIndexDatabase } from '../db/database';
+import { CodeIndexDatabase, Symbol } from '../db/database';
 import { TreeSitterParser } from './parser';
 import { SymbolExtractor, ImportInfo, CallInfo } from './symbol-extractor';
 import {
@@ -266,7 +266,7 @@ class IndexWorker {
                     break;
 
                 case 'get-architecture-skeleton':
-                    this.handleArchitectureSkeleton(request.id);
+                    this.handleGetArchitectureSkeleton(request.id, request.refine);
                     break;
 
                 case 'trace-function':
@@ -749,14 +749,18 @@ class IndexWorker {
 
             // 1. Get all files and generate skeletons
             const allFiles = this.db.getAllFiles();
+            const workspaceRoot = this.db.getWorkspaceRootHeuristic();
             const fullSkeleton: Record<string, any> = {};
+
+            console.log(`Worker: Building structural skeleton for ${allFiles.length} files (root: ${workspaceRoot})...`);
 
             for (const file of allFiles) {
                 try {
                     const content = fs.readFileSync(file.filePath, 'utf-8');
                     const language = this.getLanguage(file.filePath);
                     if (language) {
-                        fullSkeleton[file.filePath] = this.parser.generateStructuralSkeleton(content, language);
+                        const relPath = path.relative(workspaceRoot, file.filePath);
+                        fullSkeleton[relPath] = this.parser.generateStructuralSkeleton(content, language);
                     }
                 } catch (e) {
                     console.error(`Worker: Failed to read file for skeleton: ${file.filePath}`, e);
@@ -764,7 +768,7 @@ class IndexWorker {
             }
 
             // 2. Optimized Domain Classification Pass (Macro)
-            const architectureSkeleton = this.db.getArchitectureSkeleton();
+            const architectureSkeleton = await this.db.getArchitectureSkeleton();
             await this.orchestrator.classifyDomainsWithSkeleton(architectureSkeleton);
 
             // 3. Deep Symbol Refinement (Micro - in batches)
@@ -774,10 +778,12 @@ class IndexWorker {
             const allSymbols = this.db.getAllSymbols();
             const symbolsToUpdate: { id: number; metadata: any }[] = [];
 
+            console.log(`Worker: Matching refined data with ${allSymbols.length} symbols...`);
+
             // Result maps results back to symbols
-            // We need to match based on ID or filePath + name + line
             for (const symbol of allSymbols) {
-                const key = `${symbol.filePath}:${symbol.name}:${symbol.rangeStartLine}`;
+                const relPath = path.relative(workspaceRoot, symbol.filePath);
+                const key = `${relPath}:${symbol.name}:${symbol.rangeStartLine}`;
                 const metadata = refinedData.nodes[key];
 
                 if (metadata) {
@@ -810,7 +816,8 @@ class IndexWorker {
                 // For performance, we can build a lookup map of all current symbols.
                 const idMap = new Map<string, number>();
                 allSymbols.forEach(s => {
-                    const key = `${s.filePath}:${s.name}:${s.rangeStartLine}`;
+                    const relPath = path.relative(workspaceRoot, s.filePath);
+                    const key = `${relPath}:${s.name}:${s.rangeStartLine}`;
                     idMap.set(key, s.id);
                 });
 
@@ -935,33 +942,34 @@ class IndexWorker {
      * Only re-analyzes symbols in changed files + their 1st-degree neighbors
      */
     private async handleRefineIncremental(id: string, changedFiles: string[]): Promise<void> {
+        if (!this.db || !this.orchestrator) {
+            this.sendError(id, 'Resource not initialized');
+            return;
+        }
+
         try {
-            if (!this.orchestrator || !this.db) {
-                this.sendError(id, 'Orchestrator or database not initialized');
-                return;
-            }
+            console.log(`Worker: Starting incremental refinement for ${changedFiles.length} files...`);
 
-            console.log(`[Worker] Incremental Architect Pass for ${changedFiles.length} changed files`);
-
-            // Collect symbols from changed files + neighbors
-            const targetSymbolIds = new Set<number>();
             const partialSkeleton: Record<string, any> = {};
+            const targetSymbolIds = new Set<number>();
+            const workspaceRoot = this.db.getWorkspaceRootHeuristic();
 
             for (const filePath of changedFiles) {
-                const fileSymbols: any[] = this.db.getSymbolsByFile(filePath);
-
-                for (const symbol of fileSymbols) {
+                const symbolsInFile: Symbol[] = this.db.getSymbolsByFile(filePath);
+                for (const symbol of symbolsInFile) {
                     targetSymbolIds.add(symbol.id);
 
+                    const relPath = path.relative(workspaceRoot, filePath);
+                    const nodeId = `${relPath}:${symbol.name}:${symbol.rangeStartLine}`;
+
                     // Build skeleton entry
-                    const nodeId = `${filePath}:${symbol.name}:${symbol.rangeStartLine}`;
                     partialSkeleton[nodeId] = {
                         name: symbol.name,
                         type: symbol.type,
                         startLine: symbol.rangeStartLine,
                         endLine: symbol.rangeEndLine,
                         complexity: symbol.complexity,
-                        file: filePath
+                        file: relPath
                     };
 
                     // Include 1st-degree neighbors in the skeleton for richer context
@@ -973,7 +981,8 @@ class IndexWorker {
                         if (!targetSymbolIds.has(neighborId)) {
                             const neighbor = this.db.getSymbolById(neighborId);
                             if (neighbor) {
-                                const nId = `${neighbor.filePath}:${neighbor.name}:${neighbor.rangeStartLine}`;
+                                const nRelPath = path.relative(workspaceRoot, neighbor.filePath);
+                                const nId = `${nRelPath}:${neighbor.name}:${neighbor.rangeStartLine}`;
                                 if (!partialSkeleton[nId]) {
                                     partialSkeleton[nId] = {
                                         name: neighbor.name,
@@ -981,7 +990,7 @@ class IndexWorker {
                                         startLine: neighbor.rangeStartLine,
                                         endLine: neighbor.rangeEndLine,
                                         complexity: neighbor.complexity,
-                                        file: neighbor.filePath
+                                        file: nRelPath
                                     };
                                 }
                             }
@@ -1010,7 +1019,8 @@ class IndexWorker {
             for (const symbol of allSymbols) {
                 if (!targetSymbolIds.has(symbol.id)) continue;
 
-                const nodeId = `${symbol.filePath}:${symbol.name}:${symbol.rangeStartLine}`;
+                const relPath = path.relative(workspaceRoot, symbol.filePath);
+                const nodeId = `${relPath}:${symbol.name}:${symbol.rangeStartLine}`;
                 const metadata = refined.nodes[nodeId];
 
                 if (metadata) {
@@ -1032,7 +1042,7 @@ class IndexWorker {
                 this.db.updateSymbolsMetadata(symbolsToUpdate);
             }
 
-            console.log(`[Worker] Incremental refinement: ${symbolsToUpdate.length} nodes updated from ${changedFiles.length} files`);
+            console.log(`[Worker] Incremental refinement: ${symbolsToUpdate.length} nodes matched and updated from ${changedFiles.length} files`);
 
             this.sendMessage({
                 type: 'refine-incremental-complete',
@@ -1040,27 +1050,27 @@ class IndexWorker {
                 refinedNodeCount: symbolsToUpdate.length,
                 filesProcessed: changedFiles.length
             });
-
         } catch (error) {
+            console.error(`[Worker] Incremental refinement failed:`, error);
             this.sendError(id, `Incremental refinement failed: ${(error as Error).message}`);
         }
     }
 
     /**
-     * Handle architecture skeleton request
+     * Get Architecture Skeleton (JSON 1)
      */
-    private handleArchitectureSkeleton(id: string): void {
+    private async handleGetArchitectureSkeleton(id: string, refine: boolean = false): Promise<void> {
         if (!this.db) {
             this.sendError(id, 'Database not initialized');
             return;
         }
 
         try {
-            const skeleton = this.db.getArchitectureSkeleton();
+            const skeleton = await this.db.getArchitectureSkeleton(refine);
             this.sendMessage({
                 type: 'architecture-skeleton',
                 id,
-                skeleton
+                skeleton,
             });
         } catch (error) {
             this.sendError(id, `Failed to get architecture skeleton: ${(error as Error).message}`);

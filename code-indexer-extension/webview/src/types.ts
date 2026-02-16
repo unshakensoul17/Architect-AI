@@ -83,11 +83,25 @@ export interface FileNodeData extends Record<string, unknown> {
     avgFragility?: number;
     totalBlastRadius?: number;
     collapsed: boolean;
+    domainName?: string;
     // Progressive visibility states
     isDimmed?: boolean;
     isActive?: boolean;
     isClickable?: boolean;
     onToggleCollapse?: () => void;
+}
+
+export interface FolderNodeData extends Record<string, unknown> {
+    label: string;
+    path: string;
+    symbolCount: number;
+    avgComplexity: number;
+    avgFragility: number;
+    totalBlastRadius: number;
+    collapsed: boolean;
+    domainName?: string;
+    depth: number;
+    onToggleCollapse: () => void;
 }
 
 export interface SymbolNodeData extends Record<string, unknown> {
@@ -138,18 +152,23 @@ export interface ArchitectureSkeleton {
 }
 
 export interface SkeletonNodeData {
-    id: string; // filePath
-    name: string; // basename
-    type: 'file';
+    id: string; // Relative path
+    name: string; // Basename or Semantic Domain Name
+    type: 'file' | 'folder';
     symbolCount: number;
     avgComplexity: number;
-    avgFragility?: number;
-    totalBlastRadius?: number;
+    avgFragility: number;
+    totalBlastRadius: number;
+    isFolder: boolean;
+    depth: number;
+    domainName?: string;
+    children?: SkeletonNodeData[];
+    importPaths?: string[]; // Used for AI semantic pass
 }
 
 export interface SkeletonEdge {
-    source: string; // filePath
-    target: string; // filePath
+    source: string; // path
+    target: string; // path
     weight: number; // import/call count
 }
 

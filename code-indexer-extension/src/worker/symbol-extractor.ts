@@ -344,8 +344,7 @@ export class SymbolExtractor {
             function_expression: 'function',
             // Python
             class_definition: 'class',
-            function_definition: 'function',
-            // C
+            // Python & C
             function_definition: 'function',
             struct_specifier: 'class',
         };

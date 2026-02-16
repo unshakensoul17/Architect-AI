@@ -55,6 +55,10 @@
         "title": "Code Indexer: Refine Graph with AI (Architect Pass)"
       },
       {
+        "command": "codeIndexer.refineArchitecture",
+        "title": "Code Indexer: Refine Architecture Labels with AI"
+      },
+      {
         "command": "architect.viewDirectory",
         "title": "Architect: View Module Graph"
       }

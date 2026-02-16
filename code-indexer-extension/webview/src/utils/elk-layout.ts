@@ -22,8 +22,8 @@ export async function applyElkLayout(
 ): Promise<{ nodes: Node[]; edges: Edge[] }> {
     const {
         direction = 'DOWN',
-        nodeSpacing = 50,
-        layerSpacing = 100,
+        nodeSpacing = 100,
+        layerSpacing = 150,
     } = options;
 
     // Build a map of nodes by ID to quickly find them during edge processing and layout mapping
@@ -58,18 +58,18 @@ export async function applyElkLayout(
             elkNode.layoutOptions = {
                 'elk.algorithm': 'layered',
                 'elk.direction': 'DOWN',
-                'elk.padding': '[top=80,left=30,bottom=30,right=30]',
-                'elk.spacing.nodeNode': '40',
-                'elk.layered.spacing.nodeNodeBetweenLayers': '60',
+                'elk.padding': '[top=220,left=50,bottom=50,right=50]',
+                'elk.spacing.nodeNode': '60',
+                'elk.layered.spacing.nodeNodeBetweenLayers': '100',
                 'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-                'elk.aspectRatio': '1.6',
+                'elk.aspectRatio': '2.4',
                 'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
             };
         } else if (node.type === 'fileNode') {
             elkNode.layoutOptions = {
                 'elk.algorithm': 'layered',
                 'elk.direction': 'DOWN',
-                'elk.padding': '[top=60,left=20,bottom=20,right=20]',
+                'elk.padding': '[top=110,left=20,bottom=20,right=20]',
                 'elk.spacing.nodeNode': '20',
                 'elk.layered.spacing.nodeNodeBetweenLayers': '40',
                 'elk.edgeRouting': 'SPLINES',
@@ -97,12 +97,15 @@ export async function applyElkLayout(
             'elk.algorithm': 'layered',
             'elk.direction': direction,
             'elk.spacing.nodeNode': nodeSpacing.toString(),
-            'elk.spacing.edgeNode': '25',
+            'elk.spacing.edgeNode': '40',
             'elk.layered.spacing.nodeNodeBetweenLayers': layerSpacing.toString(),
             'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-            'elk.padding': '[top=50,left=50,bottom=50,right=50]',
+            'elk.padding': '[top=100,left=100,bottom=100,right=100]',
             'elk.edgeRouting': 'SPLINES',
             'elk.layered.mergeEdges': 'true',
+            'elk.separateConnectedComponents': 'true',
+            'elk.spacing.componentComponent': '140',
+            'elk.aspectRatio': '1.6',
             'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
         },
         children: rootChildren,

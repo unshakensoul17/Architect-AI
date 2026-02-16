@@ -33,7 +33,7 @@ export const DEFAULT_FOCUS_CONFIG: FocusConfig = {
     zoomLevel: 1.2,
     fadeOpacity: 0.15,
     highlightOpacity: 1.0,
-    debounceMs: 100,
+    debounceMs: 250,
 };
 
 // Node visibility states for rendering

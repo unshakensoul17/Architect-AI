@@ -136,6 +136,12 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('codeIndexer.refineArchitecture', async () => {
+            await refineArchitecture();
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('codeIndexer.configureAI', async () => {
             await configureAI();
         })
@@ -650,3 +656,37 @@ async function configureAI() {
     // Explicitly trigger worker update (though onDidChangeConfiguration should handle it)
     await updateWorkerConfig();
 }
+
+/**
+ * Refine architecture labels with AI
+ */
+async function refineArchitecture() {
+    if (!workerManager) {
+        vscode.window.showErrorMessage('Worker not initialized');
+        return;
+    }
+
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Refining architecture labels with AI...',
+            cancellable: false,
+        },
+        async () => {
+            try {
+                if (!workerManager) throw new Error('Worker not initialized');
+                const skeleton = await workerManager.getArchitectureSkeleton(true);
+
+                // If webview is open, refresh it
+                if (graphWebviewProvider) {
+                    graphWebviewProvider.refreshArchitectureSkeleton(skeleton);
+                }
+
+                vscode.window.showInformationMessage('Architecture labels refined successfully');
+            } catch (error) {
+                vscode.window.showErrorMessage(`Refinement failed: ${error}`);
+            }
+        }
+    );
+}
+

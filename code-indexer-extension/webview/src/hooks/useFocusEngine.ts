@@ -53,20 +53,11 @@ export function useFocusEngine(
             debounceTimer.current = setTimeout(() => {
                 if (!reactFlowInstance) return;
 
-                // Avoid refocusing the same node
-                if (lastFocusedRef.current === nodeId) return;
-                lastFocusedRef.current = nodeId;
-
-                const node = reactFlowInstance.getNode(nodeId);
-                if (!node) {
-                    console.warn(`Node ${nodeId} not found for focusing`);
-                    return;
-                }
-
-                // Center viewport with animation
-                reactFlowInstance.setCenter(node.position.x, node.position.y, {
+                // Center viewport with animation (Less intense zoom)
+                reactFlowInstance.fitView({
+                    nodes: [{ id: nodeId }],
                     duration: config.centerDuration,
-                    zoom: config.zoomLevel,
+                    padding: 2.5, // Much larger padding = less zoom
                 });
 
                 // Note: Opacity/highlighting is handled by graphFilter

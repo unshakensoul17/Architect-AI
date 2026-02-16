@@ -650,13 +650,13 @@ RETURN FORMAT:
 
         // Check Cache (Critical for cost saving)
         // We use a specific prefix for architect pass
-        const cacheKey = `architect_pass_v1:${CodeIndexDatabase.computeHash(skeletonJson)}`;
+        const cacheKey = `architect_pass_v2:${CodeIndexDatabase.computeHash(skeletonJson)}`;
         const cachedEntry = this.db.getAICache(cacheKey);
 
         if (cachedEntry) {
-            console.log(`[Orchestrator] Architect Pass cache hit`);
             try {
                 const result = JSON.parse(cachedEntry.response);
+                console.log(`[Orchestrator] Architect Pass cache hit for v2 (${Object.keys(result.nodes || {}).length} nodes)`);
                 return result as RefinedGraph;
             } catch (e) {
                 console.error('[Orchestrator] Failed to parse cached architect result', e);
@@ -675,10 +675,13 @@ MANDATORY RULES:
 4. If a node's purpose is unclear from the name, infer it from the File Path and its 'Imports'.
 5. NEVER return a null field. If context is limited, use architectural inference based on the naming convention and folder path.
 
+6. USE THE EXACT NODE ID FORMAT: "filePath:symbolName:startLine".
+   Example: "src/auth/login.ts:validateUser:25"
+
 Return a JSON object:
 {
   "nodes": {
-    "node_id": {
+    "filePath:symbolName:startLine": {
       "purpose": "A technical description of exactly what this class/function achieves.",
       "impact_depth": 1-10,
       "search_tags": ["business-logic-term"],
@@ -771,6 +774,59 @@ Return a JSON object:
             console.warn('[Orchestrator] Reflex pass failed:', error);
             return "Insight generation failed.";
         }
+    }
+    /**
+     * Semantic module labeling using Gemini
+     * Generates human-friendly names for top-level folders based on contents and imports
+     */
+    async semanticModuleLabeling(folders: { path: string, imports: string[] }[]): Promise<Record<string, string>> {
+        const client = this.geminiClient || this.vertexClient || this.groqClient;
+        if (!client || folders.length === 0) return {};
+
+        console.log(`[Orchestrator] Starting Semantic Module Labeling for ${folders.length} folders`);
+
+        const systemPrompt = `You are a Principal Software Architect.
+Your task is to generate ONE short, professional, business-domain name for each folder module provided.
+The name should reflect the logical responsibility of the folder.
+
+RULES:
+1. Return a JSON object mapping 'folderPath' to its new 'semanticName'.
+2. Use the folder path AND the list of primary imports/dependencies to infer the responsibility.
+3. The name should be 2-4 words maximum (e.g., "Search & Indexing Engine", "Authentication Service", "Core UI Components").
+4. If a folder is obviously a utility folder, call it "Utility Services" or similar.
+
+RETURN FORMAT:
+{
+  "labels": [
+    {
+      "folderPath": "src/lib/search",
+      "semanticName": "Search & Indexing Service"
+    }
+  ]
+}`;
+
+        const prompt = `Folders to label:\n${JSON.stringify(folders, null, 2)}`;
+
+        try {
+            const response = await client.complete(prompt, systemPrompt);
+            const content = response.content;
+
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const result = JSON.parse(jsonMatch[0]);
+                if (result.labels) {
+                    const mapping: Record<string, string> = {};
+                    result.labels.forEach((item: any) => {
+                        mapping[item.folderPath] = item.semanticName;
+                    });
+                    return mapping;
+                }
+            }
+        } catch (error) {
+            console.error('[Orchestrator] Semantic labeling failed:', error);
+        }
+
+        return {};
     }
 }
 

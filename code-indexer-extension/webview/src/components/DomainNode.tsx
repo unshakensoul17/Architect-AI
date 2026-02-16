@@ -10,6 +10,8 @@ export interface DomainNodeData extends Record<string, unknown> {
         coupling: number;
         healthScore: number;
         status: 'healthy' | 'warning' | 'critical';
+        avgFragility?: number;
+        totalBlastRadius?: number;
     };
     collapsed: boolean;
     // Progressive visibility states
@@ -22,7 +24,7 @@ interface DomainNodeProps {
     data: DomainNodeData;
 }
 
-const DomainNode = memo(({ data }: DomainNodeProps) => {
+const DomainNode = memo(({ data, style }: { data: DomainNodeData; style?: React.CSSProperties }) => {
     const {
         domain,
         health,
@@ -32,6 +34,7 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
         isClickable = true
     } = data;
     const { healthScore, status, symbolCount, avgComplexity, coupling } = health;
+
 
     // Get domain display name and icon
     const domainDisplayNames: Record<string, string> = {
@@ -84,7 +87,7 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
     return (
         <div
             style={{
-                minWidth: '400px',
+                ...style,
                 minHeight: collapsed ? '120px' : '200px',
                 border: `${borderWidth}px solid ${colors.border}`,
                 borderRadius: '12px',
@@ -213,6 +216,46 @@ const DomainNode = memo(({ data }: DomainNodeProps) => {
                                 {(coupling * 100).toFixed(0)}%
                             </div>
                         </div>
+
+                        {/* Fragility (Folders only) */}
+                        {health.avgFragility !== undefined && (
+                            <div>
+                                <div
+                                    style={{
+                                        fontSize: '11px',
+                                        opacity: 0.7,
+                                        marginBottom: '4px',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.5px',
+                                    }}
+                                >
+                                    Total Fragility
+                                </div>
+                                <div style={{ fontSize: '20px', fontWeight: 'bold', color: health.avgFragility > 100 ? '#ef4444' : 'inherit' }}>
+                                    {health.avgFragility.toFixed(0)}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Blast Radius (Folders only) */}
+                        {health.totalBlastRadius !== undefined && (
+                            <div>
+                                <div
+                                    style={{
+                                        fontSize: '11px',
+                                        opacity: 0.7,
+                                        marginBottom: '4px',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.5px',
+                                    }}
+                                >
+                                    Max Blast Radius
+                                </div>
+                                <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#ef4444' }}>
+                                    {health.totalBlastRadius}
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Health Bar */}

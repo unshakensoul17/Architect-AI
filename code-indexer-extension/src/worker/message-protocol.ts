@@ -139,6 +139,7 @@ export type WorkerRequest =
     | {
         type: 'get-architecture-skeleton';
         id: string;
+        refine?: boolean;
     }
     | {
         type: 'trace-function';

@@ -53,18 +53,23 @@ export interface ArchitectureSkeleton {
 }
 
 export interface SkeletonNodeData {
-    id: string; // filePath
-    name: string; // basename
-    type: 'file';
+    id: string; // Relative path
+    name: string; // Basename or Semantic Domain Name
+    type: 'file' | 'folder';
     symbolCount: number;
     avgComplexity: number;
-    avgFragility?: number;
-    totalBlastRadius?: number;
+    avgFragility: number;
+    totalBlastRadius: number;
+    isFolder: boolean;
+    depth: number;
+    domainName?: string;
+    children?: SkeletonNodeData[];
+    importPaths?: string[]; // Used for AI semantic pass
 }
 
 export interface SkeletonEdge {
-    source: string; // filePath
-    target: string; // filePath
+    source: string; // Relative filePath
+    target: string; // Relative filePath
     weight: number; // import/call count
 }
 
@@ -922,32 +927,149 @@ export class CodeIndexDatabase {
 
     // ========== Architecture Skeleton (Macro View) ==========
 
-    /**
-     * Get validated or generate new Architecture Skeleton
-     */
-    getArchitectureSkeleton(): ArchitectureSkeleton {
+    async getArchitectureSkeleton(refineWithAI: boolean = false): Promise<ArchitectureSkeleton> {
+        let skeleton: ArchitectureSkeleton | null = null;
         const cached = this.getMeta('architecture_skeleton');
+
         if (cached) {
             try {
-                return JSON.parse(cached);
+                skeleton = JSON.parse(cached);
+                // If cache is empty but we likely have data, force regeneration
+                if (skeleton && skeleton.nodes.length === 0) {
+                    const count = (this.db.prepare('SELECT COUNT(*) as count FROM symbols').get() as any).count;
+                    if (count > 0) skeleton = null;
+                }
             } catch (e) {
                 console.error('Failed to parse cached skeleton', e);
             }
         }
 
-        const skeleton = this.generateArchitectureSkeleton();
-        this.setMeta('architecture_skeleton', JSON.stringify(skeleton));
+        if (!skeleton) {
+            skeleton = this.generateArchitectureSkeleton();
+        }
+
+        if (refineWithAI) {
+            skeleton = await this.refineArchitectureLabelsWithAI(skeleton);
+            this.setMeta('architecture_skeleton', JSON.stringify(skeleton));
+        } else if (!cached || !skeleton) {
+            this.setMeta('architecture_skeleton', JSON.stringify(skeleton));
+        }
+
+        return skeleton;
+    }
+
+    private async refineArchitectureLabelsWithAI(skeleton: ArchitectureSkeleton): Promise<ArchitectureSkeleton> {
+        if (!this.orchestrator) return skeleton;
+
+        // Collect folders that need labeling (typically depth 1 or 2)
+        const foldersToLabel: { path: string, imports: string[] }[] = [];
+
+        const traverse = (nodes: SkeletonNodeData[]) => {
+            for (const node of nodes) {
+                if (node.isFolder && node.depth <= 2) {
+                    foldersToLabel.push({
+                        path: node.id,
+                        imports: node.importPaths || []
+                    });
+                }
+                if (node.children) {
+                    traverse(node.children);
+                }
+            }
+        };
+
+        traverse(skeleton.nodes);
+
+        if (foldersToLabel.length === 0) return skeleton;
+
+        const labels = await this.orchestrator.semanticModuleLabeling(foldersToLabel);
+
+        // Apply labels
+        const applyLabels = (nodes: SkeletonNodeData[]) => {
+            for (const node of nodes) {
+                if (labels[node.id]) {
+                    node.domainName = labels[node.id];
+                }
+                if (node.children) {
+                    applyLabels(node.children);
+                }
+            }
+        };
+
+        applyLabels(skeleton.nodes);
+
         return skeleton;
     }
 
     private generateArchitectureSkeleton(): ArchitectureSkeleton {
-        // 1. Aggregated File Nodes
-        const files = this.db.prepare(`SELECT DISTINCT file_path FROM symbols`).all() as { file_path: string }[];
+        // 1. Get all file paths and determine workspace root (fallback to common prefix)
+        const fileResults = this.db.prepare(`SELECT DISTINCT file_path FROM symbols`).all() as { file_path: string }[];
+        const rawFilePaths = fileResults.map(f => f.file_path);
 
-        const nodes: SkeletonNodeData[] = [];
+        if (rawFilePaths.length === 0) return { nodes: [], edges: [] };
 
-        for (const f of files) {
-            const symbolsInFile = this.db.prepare(`SELECT id, complexity FROM symbols WHERE file_path = ?`).all(f.file_path) as { id: number; complexity: number }[];
+        // Determine common prefix to use as relative root
+        const workspaceRoot = this.findCommonPrefix(rawFilePaths);
+
+        // 2. Filter and normalize paths
+        const ignoredPatterns = ['.next', 'node_modules', '.git', 'types', 'dist', 'build', '.venv', '__pycache__'];
+        const filteredFiles = rawFilePaths.filter(fp => {
+            const relPath = path.relative(workspaceRoot, fp);
+            const segments = relPath.split(path.sep);
+
+            // Don't filter out everything if workspaceRoot is '/'
+            if (relPath === fp && fp.startsWith('/')) {
+                // If it's still absolute, only filter if any segment matches
+                return !segments.some(s => ignoredPatterns.includes(s));
+            }
+
+            return !segments.some(s => ignoredPatterns.includes(s));
+        });
+
+        const nodesMap = new Map<string, SkeletonNodeData>();
+        const root: SkeletonNodeData[] = [];
+
+        // Helper to get or create folder nodes
+        const getOrCreateFolder = (relPath: string): SkeletonNodeData => {
+            if (nodesMap.has(relPath)) return nodesMap.get(relPath)!;
+
+            const parts = relPath.split(path.sep);
+            const name = parts[parts.length - 1];
+            const depth = parts.length;
+
+            const folderNode: SkeletonNodeData = {
+                id: relPath,
+                name,
+                type: 'folder',
+                symbolCount: 0,
+                avgComplexity: 0,
+                avgFragility: 0,
+                totalBlastRadius: 0,
+                isFolder: true,
+                depth,
+                children: []
+            };
+
+            nodesMap.set(relPath, folderNode);
+
+            // Link to parent
+            if (parts.length > 1) {
+                const parentPath = parts.slice(0, -1).join(path.sep);
+                const parent = getOrCreateFolder(parentPath);
+                parent.children!.push(folderNode);
+            } else {
+                root.push(folderNode);
+            }
+
+            return folderNode;
+        };
+
+        // 3. Create file nodes and build basic tree
+        for (const fp of filteredFiles) {
+            const relPath = path.relative(workspaceRoot, fp);
+            const parts = relPath.split(path.sep);
+
+            const symbolsInFile = this.db.prepare(`SELECT id, complexity FROM symbols WHERE file_path = ?`).all(fp) as { id: number; complexity: number }[];
 
             let totalComplexity = 0;
             let totalFragility = 0;
@@ -960,18 +1082,72 @@ export class CodeIndexDatabase {
                 if (br > maxBlastRadius) maxBlastRadius = br;
             }
 
-            nodes.push({
-                id: f.file_path,
-                name: path.basename(f.file_path),
+            // Get primary imports/dependencies for AI semantic pass
+            const outgoingEdges = this.db.prepare(`
+                SELECT DISTINCT s2.file_path 
+                FROM edges e 
+                JOIN symbols s2 ON e.target_id = s2.id 
+                WHERE e.source_id IN (SELECT id FROM symbols WHERE file_path = ?)
+                AND s2.file_path != ?
+            `).all(fp, fp) as { file_path: string }[];
+
+            const fileNode: SkeletonNodeData = {
+                id: relPath,
+                name: path.basename(relPath),
                 type: 'file',
                 symbolCount: symbolsInFile.length,
-                avgComplexity: symbolsInFile.length > 0 ? Math.round((totalComplexity / symbolsInFile.length) * 10) / 10 : 0,
-                avgFragility: symbolsInFile.length > 0 ? Math.round((totalFragility / symbolsInFile.length) * 10) / 10 : 0,
-                totalBlastRadius: maxBlastRadius // We'll use max blast radius to represent file sensitivity
-            });
+                avgComplexity: symbolsInFile.length > 0 ? totalComplexity / symbolsInFile.length : 0,
+                avgFragility: symbolsInFile.length > 0 ? totalFragility / symbolsInFile.length : 0,
+                totalBlastRadius: maxBlastRadius,
+                isFolder: false,
+                depth: parts.length,
+                importPaths: outgoingEdges.map(e => path.relative(workspaceRoot, e.file_path))
+            };
+
+            nodesMap.set(relPath, fileNode);
+
+            if (parts.length > 1) {
+                const parentPath = parts.slice(0, -1).join(path.sep);
+                const parent = getOrCreateFolder(parentPath);
+                parent.children!.push(fileNode);
+            } else {
+                root.push(fileNode);
+            }
         }
 
-        // 2. Aggregated File Edges
+        // 4. Bottom-up metric aggregation for folder nodes
+        const aggregateMetrics = (node: SkeletonNodeData) => {
+            if (!node.isFolder || !node.children) return;
+
+            node.children.forEach(aggregateMetrics);
+
+            let totalSymbols = 0;
+            let weightedComplexitySum = 0;
+            let totalFragilitySum = 0;
+            let maxBlastRadius = 0;
+            const folderImports = new Set<string>();
+
+            for (const child of node.children) {
+                totalSymbols += child.symbolCount;
+                weightedComplexitySum += child.avgComplexity * child.symbolCount;
+                totalFragilitySum += child.avgFragility; // Sum of fragility
+                if (child.totalBlastRadius > maxBlastRadius) maxBlastRadius = child.totalBlastRadius;
+
+                if (child.importPaths) {
+                    child.importPaths.forEach(p => folderImports.add(p));
+                }
+            }
+
+            node.symbolCount = totalSymbols;
+            node.avgComplexity = totalSymbols > 0 ? Math.round((weightedComplexitySum / totalSymbols) * 10) / 10 : 0;
+            node.avgFragility = Math.round(totalFragilitySum * 10) / 10;
+            node.totalBlastRadius = maxBlastRadius;
+            node.importPaths = Array.from(folderImports).slice(0, 20); // Limit to 20 for AI context
+        };
+
+        root.forEach(aggregateMetrics);
+
+        // 5. Build relative edges
         const edgeStats = this.db.prepare(`
             SELECT 
                 s1.file_path as source_file,
@@ -984,13 +1160,85 @@ export class CodeIndexDatabase {
             GROUP BY s1.file_path, s2.file_path
         `).all() as { source_file: string; target_file: string; weight: number }[];
 
-        const edgesList: SkeletonEdge[] = edgeStats.map(stat => ({
-            source: stat.source_file,
-            target: stat.target_file,
-            weight: stat.weight
-        }));
+        const edgesList: SkeletonEdge[] = [];
+        for (const stat of edgeStats) {
+            const sourceRel = path.relative(workspaceRoot, stat.source_file);
+            const targetRel = path.relative(workspaceRoot, stat.target_file);
 
-        return { nodes, edges: edgesList };
+            // Only include edges between files that weren't ignored
+            if (nodesMap.has(sourceRel) && nodesMap.has(targetRel)) {
+                edgesList.push({
+                    source: sourceRel,
+                    target: targetRel,
+                    weight: stat.weight
+                });
+            }
+        }
+
+        // 6. Phase 2: Domain Mapping (Initial Heuristic)
+        this.assignDomainToFolders(root);
+
+        return { nodes: root, edges: edgesList };
+    }
+
+    /**
+     * Get workspace root using common prefix heuristic
+     */
+    getWorkspaceRootHeuristic(): string {
+        const allFiles = this.getAllFiles();
+        if (allFiles.length === 0) return '/';
+        return this.findCommonPrefix(allFiles.map(f => f.filePath));
+    }
+
+    private findCommonPrefix(paths: string[]): string {
+        if (paths.length === 0) return '';
+        if (paths.length === 1) return path.dirname(paths[0]);
+
+        const sorted = paths.concat().sort();
+        const a1 = sorted[0], a2 = sorted[sorted.length - 1], L = a1.length, i = 0;
+        let prefix = '';
+        const parts1 = a1.split(path.sep);
+        const parts2 = a2.split(path.sep);
+        const commonParts = [];
+        for (let j = 0; j < Math.min(parts1.length, parts2.length); j++) {
+            if (parts1[j] === parts2[j]) {
+                commonParts.push(parts1[j]);
+            } else {
+                break;
+            }
+        }
+        return commonParts.join(path.sep) || path.sep;
+    }
+
+    private assignDomainToFolders(nodes: SkeletonNodeData[]) {
+        const domainHeuristics: Record<string, string> = {
+            'src/app': 'User Interface',
+            'src/api': 'API Layer',
+            'src/lib': 'Infrastructure/Utils',
+            'src/components': 'UI Components',
+            'src/hooks': 'React Hooks',
+            'src/services': 'Business Services',
+            'src/worker': 'Background Workers',
+            'src/db': 'Data Layer',
+        };
+
+        const traverse = (node: SkeletonNodeData, inheritedDomain?: string) => {
+            // Apply heuristic or inherited
+            let domain = inheritedDomain;
+            if (domainHeuristics[node.id]) {
+                domain = domainHeuristics[node.id];
+            }
+
+            if (domain) {
+                node.domainName = domain;
+            }
+
+            if (node.children) {
+                node.children.forEach(child => traverse(child, domain));
+            }
+        };
+
+        nodes.forEach(node => traverse(node));
     }
 
     // ========== Function Trace (Micro View) ==========

@@ -17,7 +17,7 @@ import FileNode from './FileNode';
 import SymbolNode from './SymbolNode';
 import DomainNode from './DomainNode';
 import ViewModeBar from './ViewModeBar';
-import type { GraphData, DomainNodeData, FileNodeData, SymbolNodeData, VSCodeAPI } from '../types';
+import type { GraphData, DomainNodeData, FileNodeData, SymbolNodeData, SkeletonNodeData, VSCodeAPI } from '../types';
 import type { ViewMode, FilterContext } from '../types/viewMode';
 import { DEFAULT_RISK_THRESHOLDS } from '../types/viewMode';
 import { useViewMode } from '../hooks/useViewMode';
@@ -74,8 +74,40 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     const reactFlowInstance = useReactFlow();
     const { focusNode, clearFocus } = useFocusEngine(reactFlowInstance);
 
+
     // Track if we've done the initial fitView to prevent blinking
+    const [miniMapVisible, setMiniMapVisible] = useState(true);
     const [hasInitialFit, setHasInitialFit] = useState(false);
+
+    // Architecture Filtering & Sorting State
+    const [selectedDomain, setSelectedDomain] = useState<string>('All');
+    const [sortBy, setSortBy] = useState<'name' | 'complexity' | 'fragility' | 'blastRadius'>('name');
+
+    // Extract available domains from architecture skeleton
+    const availableDomains = useMemo(() => {
+        if (!architectureSkeleton) return [];
+        const domains = new Set<string>();
+
+        const traverse = (nodes: SkeletonNodeData[]) => {
+            for (const n of nodes) {
+                // Priority 1: Explicitly classified domains
+                if (n.domainName) {
+                    domains.add(n.domainName);
+                }
+
+                // Priority 2: Folder names (at depth 0 or 1) as proxy domains
+                // This handles projects without AI analysis gracefully.
+                if (n.isFolder && n.depth <= 1) {
+                    domains.add(n.name);
+                }
+
+                if (n.children) traverse(n.children);
+            }
+        };
+
+        traverse(architectureSkeleton.nodes);
+        return Array.from(domains).sort();
+    }, [architectureSkeleton]);
 
     // Execution flows for flow mode
     const [executionFlows, setExecutionFlows] = useState<ReturnType<typeof detectExecutionFlows>>([]);
@@ -88,23 +120,167 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         const buildNodes = async () => {
             // Mode: Architecture (Macro View)
             if (currentMode === 'architecture' && architectureSkeleton) {
-                const nodes: Node[] = architectureSkeleton.nodes.map(n => ({
-                    id: n.id,
-                    type: 'fileNode',
-                    position: { x: 0, y: 0 },
-                    data: {
-                        filePath: n.id,
-                        symbolCount: n.symbolCount,
-                        avgCoupling: 0,
-                        avgFragility: n.avgFragility,
-                        totalBlastRadius: n.totalBlastRadius,
-                        collapsed: false,
-                        onToggleCollapse: undefined,
-                        label: n.name
-                    } as FileNodeData,
-                }));
+                const nodes: Node[] = [];
+                const structureEdges: Edge[] = [];
 
-                const edges: Edge[] = architectureSkeleton.edges.map((e, i) => ({
+                // Helper to sort nodes recursively
+                const sortNodes = (nodes: SkeletonNodeData[]): SkeletonNodeData[] => {
+                    return [...nodes].sort((a, b) => {
+                        switch (sortBy) {
+                            case 'complexity':
+                                return (b.avgComplexity || 0) - (a.avgComplexity || 0);
+                            case 'fragility':
+                                return (b.avgFragility || 0) - (a.avgFragility || 0);
+                            case 'blastRadius':
+                                return (b.totalBlastRadius || 0) - (a.totalBlastRadius || 0);
+                            case 'name':
+                            default:
+                                return a.name.localeCompare(b.name);
+                        }
+                    }).map(node => ({
+                        ...node,
+                        children: node.children ? sortNodes(node.children) : undefined
+                    }));
+                };
+
+                // Helper to filter nodes recursively
+                const filterNodes = (nodes: SkeletonNodeData[]): SkeletonNodeData[] => {
+                    if (selectedDomain === 'All') return nodes;
+
+                    return nodes.reduce<SkeletonNodeData[]>((acc, node) => {
+                        // Check for domain match or folder name match
+                        const isMatch = node.domainName === selectedDomain || node.name === selectedDomain;
+
+                        if (isMatch) {
+                            // If this node matches, we keep it and its entire sub-hierarchy
+                            acc.push(node);
+                        } else if (node.children) {
+                            // Otherwise, check if any of its children match
+                            const filteredChildren = filterNodes(node.children);
+                            if (filteredChildren.length > 0) {
+                                // Keep this container node but with only matching children
+                                acc.push({ ...node, children: filteredChildren });
+                            }
+                        }
+                        return acc;
+                    }, []);
+                };
+
+                // Apply Sorting & Filtering
+                let processedSkeleton = sortNodes(architectureSkeleton!.nodes);
+                processedSkeleton = filterNodes(processedSkeleton);
+
+                // Helper to calculate health from node metrics
+                const calculateNodeHealth = (n: SkeletonNodeData) => {
+                    // 1. Complexity Score (Lower is better)
+                    // limit 20 as "max reasonable average complexity"
+                    const complexityScore = Math.max(0, 100 - (n.avgComplexity / 20) * 100);
+
+                    // 2. Fragility/Coupling Score (Lower is better)
+                    // limit 50 as "max reasonable average fragility"
+                    const fragilityScore = Math.max(0, 100 - (n.avgFragility / 50) * 100);
+
+                    // Weighted Average (60% Complexity, 40% Fragility)
+                    const healthScore = Math.round(complexityScore * 0.6 + fragilityScore * 0.4);
+
+                    let status: 'healthy' | 'warning' | 'critical' = 'healthy';
+                    if (healthScore < 60) status = 'critical';
+                    else if (healthScore < 80) status = 'warning';
+
+                    return {
+                        healthScore,
+                        status,
+                        // Map fragility to a 0-1 scale for the "Coupling" display
+                        coupling: Math.min(1, n.avgFragility / 50)
+                    };
+                };
+
+                const processRecursiveNodes = (skeletonNodes: SkeletonNodeData[], parentId?: string, parentDomain?: string, depth = 0) => {
+                    // Depth 0: Show only Top-Level Domains (recursion blocked below)
+                    // Depth 1: Show Domains + Nested Folders (Files skipped)
+                    // Depth 2: Show Everything
+
+                    for (const n of skeletonNodes) {
+                        // Filter Logic based on maxDepth
+                        if (maxDepth === 0 && depth > 0) return; // Should not happen due to recursion guard, but safety
+                        if (maxDepth === 1 && !n.isFolder) continue; // Skip files in Structure mode
+
+                        const isCollapsed = collapsedNodes.has(n.id);
+
+                        // Only use domainName if it's defined and NOT the same as the parent's domain
+                        const effectiveDomain = (n.domainName && n.domainName !== parentDomain)
+                            ? n.domainName
+                            : n.name;
+
+                        // Linked Hierarchy Logic:
+                        // If it's a folder, it becomes a top-level node (no parentId) regardless of depth
+                        // If it's a file, it stays inside its parent folder (parentId is preserved)
+                        const nodeParentId = n.isFolder ? undefined : parentId;
+
+                        nodes.push({
+                            id: n.id,
+                            type: n.isFolder ? 'domainNode' : 'fileNode',
+                            position: { x: 0, y: 0 },
+                            parentId: nodeParentId,
+                            extent: n.isFolder ? undefined : 'parent',
+                            data: n.isFolder ? {
+                                domain: effectiveDomain,
+                                health: {
+                                    domain: effectiveDomain,
+                                    status: calculateNodeHealth(n).status,
+                                    healthScore: calculateNodeHealth(n).healthScore,
+                                    avgComplexity: n.avgComplexity,
+                                    coupling: calculateNodeHealth(n).coupling,
+                                    symbolCount: n.symbolCount,
+                                    avgFragility: n.avgFragility,
+                                    totalBlastRadius: n.totalBlastRadius
+                                },
+                                collapsed: isCollapsed,
+                                onToggleCollapse: () => toggleNodeCollapse(n.id),
+                            } as DomainNodeData : {
+                                filePath: n.id,
+                                symbolCount: n.symbolCount,
+                                avgCoupling: 0,
+                                avgFragility: n.avgFragility,
+                                totalBlastRadius: n.totalBlastRadius,
+                                collapsed: false,
+                                onToggleCollapse: undefined,
+                                label: n.name,
+                                domainName: n.domainName
+                            } as FileNodeData,
+                        });
+
+                        // If parent exists and this is a folder, create a structural edge
+                        if (parentId && n.isFolder) {
+                            structureEdges.push({
+                                id: `struct-${parentId}-${n.id}`,
+                                source: parentId,
+                                target: n.id,
+                                type: 'smoothstep',
+                                animated: false,
+                                style: {
+                                    stroke: '#6b7280',
+                                    strokeWidth: 2,
+                                    strokeDasharray: '5,5',
+                                    opacity: 0.5
+                                },
+                                label: 'contains'
+                            });
+                        }
+
+                        // Recursion Logic
+                        // If maxDepth is 0, we do NOT recurse (showing only top level)
+                        const shouldRecurse = maxDepth > 0 && !isCollapsed && n.children && n.children.length > 0;
+
+                        if (shouldRecurse) {
+                            processRecursiveNodes(n.children!, n.id, n.domainName || parentDomain, depth + 1);
+                        }
+                    }
+                };
+
+                processRecursiveNodes(processedSkeleton);
+
+                const dependencyEdges: Edge[] = architectureSkeleton!.edges.map((e, i) => ({
                     id: `skel-edge-${i}`,
                     source: e.source,
                     target: e.target,
@@ -114,7 +290,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                 }));
 
                 setAllNodes(nodes);
-                setAllEdges(edges);
+                setAllEdges([...structureEdges, ...dependencyEdges]);
                 return;
             }
 
@@ -332,7 +508,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
 
         buildNodes();
         setHasInitialFit(false);
-    }, [graphData, currentMode, collapsedNodes, toggleNodeCollapse, architectureSkeleton, functionTrace]);
+    }, [graphData, currentMode, collapsedNodes, toggleNodeCollapse, architectureSkeleton, functionTrace, selectedDomain, sortBy, maxDepth]);
 
 
 
@@ -396,6 +572,20 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         return { visibleNodes: finalNodes, visibleEdges: result.visibleEdges };
     }, [allNodes, allEdges, currentMode, focusedNodeId, relatedNodeIdsKey, executionFlows, searchQuery, maxDepth]);
 
+    // Handle search-driven focus (Only happens when searchQuery changes)
+    useEffect(() => {
+        if (searchQuery && searchQuery.length > 2 && visibleNodes.length > 0) {
+            // Find first node that matches search
+            const match = visibleNodes.find(n =>
+                (n.data as any).name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                (n.data as any).label?.toLowerCase().includes(searchQuery.toLowerCase())
+            );
+            if (match) {
+                focusNode(match.id);
+            }
+        }
+    }, [searchQuery, focusNode]); // Only depend on searchQuery change
+
     // Apply layout when visible nodes change (debounced to prevent rapid re-layouts)
     useEffect(() => {
         if (visibleNodes.length === 0) {
@@ -458,33 +648,73 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         return () => clearTimeout(layoutTimer);
     }, [visibleNodes, visibleEdges, currentMode, setNodes, setEdges]);
 
-    // Highlight edges on hover
+    // Highlight nodes and edges on hover with rich aesthetics
+    const { interactiveNodes, interactiveNodesDict } = useMemo(() => {
+        if (!hoveredNodeId) return { interactiveNodes: nodes, interactiveNodesDict: new Set(nodes.map(n => n.id)) };
+
+        // Identify connected nodes
+        const connectedIds = new Set<string>([hoveredNodeId]);
+        edges.forEach(edge => {
+            if (edge.source === hoveredNodeId) connectedIds.add(edge.target);
+            if (edge.target === hoveredNodeId) connectedIds.add(edge.source);
+        });
+
+        const themedNodes = nodes.map(node => {
+            const isHovered = node.id === hoveredNodeId;
+            const isConnected = connectedIds.has(node.id);
+
+            return {
+                ...node,
+                style: {
+                    ...node.style,
+                    opacity: isConnected ? 1 : 0.2,
+                    filter: isHovered ? 'drop-shadow(0 0 10px rgba(56, 189, 248, 0.5))' : 'none',
+                    transition: 'opacity 0.2s ease, filter 0.2s ease',
+                },
+            };
+        });
+
+        return { interactiveNodes: themedNodes, interactiveNodesDict: connectedIds };
+    }, [nodes, edges, hoveredNodeId]);
+
     const interactiveEdges = useMemo(() => {
         if (!hoveredNodeId) return edges;
 
         return edges.map((edge) => {
-            const isConnected = edge.source === hoveredNodeId || edge.target === hoveredNodeId;
+            const isOutgoing = edge.source === hoveredNodeId;
+            const isIncoming = edge.target === hoveredNodeId;
+            const isConnected = isOutgoing || isIncoming;
+            const isStructural = edge.id.startsWith('struct-');
+
             if (isConnected) {
+                // Sky Blue for calls (outgoing), Amber for active path (incoming)
+                const highlightColor = isOutgoing ? '#38bdf8' : '#f59e0b';
+
                 return {
                     ...edge,
+                    type: isStructural ? 'smoothstep' : 'default', // Using 'default' (bezier) for smoother look on highlight
                     style: {
                         ...edge.style,
                         opacity: 1.0,
-                        strokeWidth: 3,
-                        strokeDasharray: '0', // Make solid for better focus
+                        strokeWidth: 4,
+                        stroke: isStructural ? '#ffffff' : highlightColor,
+                        strokeDasharray: isStructural ? '5,5' : '0',
+                        filter: isStructural ? 'none' : `drop-shadow(0 0 8px ${highlightColor})`,
                     },
                     markerEnd: {
                         ...(edge.markerEnd as any),
+                        color: isStructural ? '#ffffff' : highlightColor,
                         width: 25,
                         height: 25,
-                    }
+                    },
+                    zIndex: 1000,
                 };
             }
             return {
                 ...edge,
                 style: {
                     ...edge.style,
-                    opacity: 0.1, // Dim other edges even more
+                    opacity: 0.05,
                 }
             };
         });
@@ -502,12 +732,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         }
     }, [nodes, hasInitialFit, isLayouting, reactFlowInstance]);
 
-    // Re-focus on node when nodes change (e.g. after layout)
-    useEffect(() => {
-        if (focusedNodeId && nodes.length > 0 && !isLayouting) {
-            focusNode(focusedNodeId);
-        }
-    }, [focusedNodeId, nodes, isLayouting, focusNode]);
+
 
     // Handle node hover
     const handleNodeMouseEnter = useCallback((_event: React.MouseEvent, node: Node) => {
@@ -609,6 +834,41 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         );
     }
 
+
+    // Safety check: Avoid rendering empty graph containers which might cause issues
+    if (nodes.length === 0 && !isLayouting) {
+        // CASE 1: Filtered results are empty (Only if a specific domain is selected)
+        if (selectedDomain !== 'All' &&
+            ((currentMode === 'architecture' && architectureSkeleton) || (currentMode === 'flow' && graphData))) {
+            return (
+                <div className="flex items-center justify-center w-full h-full">
+                    <div className="text-center">
+                        <div className="text-lg font-semibold mb-2">No Matching Nodes</div>
+                        <div className="text-sm opacity-70 mb-4">
+                            The current filter (Domain: {selectedDomain}) matches no files in this view.
+                        </div>
+                        <button
+                            onClick={() => setSelectedDomain('All')}
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm transition-colors"
+                        >
+                            Reset Filter
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // CASE 2: Still Processing / Calculating Layout
+        return (
+            <div className="flex items-center justify-center w-full h-full">
+                <div className="text-center">
+                    <div style={{ fontSize: '24px', marginBottom: '16px', color: 'var(--vscode-textLink-foreground)' }}>⟳</div>
+                    <div className="text-sm opacity-70">Preparing Graph Visualization...</div>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div
             style={{
@@ -625,11 +885,16 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                 onModeChange={handleModeChange}
                 maxDepth={maxDepth}
                 onDepthChange={setMaxDepth}
+                availableDomains={availableDomains}
+                selectedDomain={selectedDomain}
+                onSelectDomain={setSelectedDomain}
+                sortBy={sortBy}
+                onSortChange={setSortBy as any}
             />
 
             <div style={{ flex: 1, position: 'relative' }}>
                 <ReactFlow
-                    nodes={nodes}
+                    nodes={interactiveNodes}
                     edges={interactiveEdges}
                     onNodesChange={onNodesChange}
                     onEdgesChange={onEdgesChange}
@@ -658,6 +923,40 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                         pannable={false}
                         zoomable={false}
                     />
+
+                    {/* Legend */}
+                    <div style={{
+                        position: 'absolute',
+                        bottom: '20px',
+                        left: '20px',
+                        backgroundColor: 'var(--vscode-editor-background)',
+                        border: '1px solid var(--vscode-widget-border)',
+                        padding: '12px',
+                        borderRadius: '8px',
+                        fontSize: '11px',
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+                        zIndex: 10,
+                        opacity: 0.9,
+                        color: 'var(--vscode-editor-foreground)',
+                        pointerEvents: 'none' // Let clicks pass through if needed, but usually legend is just visual
+                    }}>
+                        <div style={{ fontWeight: 600, marginBottom: '8px', opacity: 0.8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Relationships</div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                            <div style={{ width: '24px', height: '2px', backgroundColor: '#6b7280', borderTop: '2px dashed #6b7280' }}></div>
+                            <span>Hierarchy (Contains)</span>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                            <div style={{ width: '24px', height: '3px', backgroundColor: '#38bdf8' }}></div>
+                            <span>Calls / Dependencies</span>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ width: '24px', height: '3px', backgroundColor: '#f59e0b', boxShadow: '0 0 4px #f59e0b' }}></div>
+                            <span>Active Path / Selection</span>
+                        </div>
+                    </div>
                 </ReactFlow>
             </div>
         </div>

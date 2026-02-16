@@ -15,7 +15,7 @@ export interface FileNodeData extends Record<string, unknown> {
     isClickable?: boolean;
 }
 
-const FileNode = memo(({ data }: NodeProps<Node<FileNodeData>>) => {
+const FileNode = memo(({ data, style }: NodeProps<Node<FileNodeData>> & { style?: React.CSSProperties }) => {
     const {
         filePath,
         symbolCount,
@@ -48,12 +48,11 @@ const FileNode = memo(({ data }: NodeProps<Node<FileNodeData>>) => {
         <div
             className="rounded-lg shadow-lg bg-opacity-90"
             style={{
+                ...style,
                 backgroundColor: 'var(--vscode-sideBar-background, #252526)',
                 borderColor,
                 borderWidth: `${borderWidth}px`,
                 borderStyle: 'solid',
-                width: '100%',
-                height: '100%',
 
                 opacity: containerOpacity,
                 boxShadow,
