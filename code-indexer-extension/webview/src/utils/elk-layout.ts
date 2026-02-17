@@ -33,17 +33,38 @@ export async function applyElkLayout(
     const elkNodeMap = new Map<string, ElkNode>();
 
     // 1. Create ELK nodes for every React Flow node
+
+    // Helper to check if a node is a nested folder (has a parent that is also a domain)
+    const isNestedFolder = (node: Node) => {
+        if (node.type !== 'domainNode') return false;
+        if (!node.parentId) return false;
+        const parent = nodeMap.get(node.parentId);
+        return parent && parent.type === 'domainNode';
+    };
+
     nodes.forEach(node => {
-        // Default sizes based on node type
-        let width = 180;
+        // Hierarchy Sizes (1.4x Scaling):
+        // 1. Root Domain (Largest): Holds everything
+        // 2. Folder / Sub-domain (Medium): Holds files
+        // 3. File (Small): Leaf node
+
+        let width = 200;
         let height = 60;
 
         if (node.type === 'domainNode') {
-            width = 500;
-            height = 300;
+            if (isNestedFolder(node)) {
+                // Folder (Medium)
+                width = 400; // Was 560, Orig 280
+                height = 250; // Was 360, Orig 180
+            } else {
+                // Root Domain (Largest)
+                width = 600; // Was 800, Orig 400
+                height = 380; // Was 500, Orig 250
+            }
         } else if (node.type === 'fileNode') {
-            width = 300;
-            height = 150;
+            // File (Small)
+            width = 280; // Was 400, Orig 200
+            height = 120; // Was 180, Orig 90
         }
 
         const elkNode: ElkNode = {
@@ -58,20 +79,21 @@ export async function applyElkLayout(
             elkNode.layoutOptions = {
                 'elk.algorithm': 'layered',
                 'elk.direction': 'DOWN',
-                'elk.padding': '[top=220,left=50,bottom=50,right=50]',
-                'elk.spacing.nodeNode': '60',
-                'elk.layered.spacing.nodeNodeBetweenLayers': '100',
+                // Stitched Look: Top padding matches header
+                'elk.padding': '[top=50,left=20,bottom=20,right=20]',
+                'elk.spacing.nodeNode': '30', // Tuned
+                'elk.layered.spacing.nodeNodeBetweenLayers': '40',
                 'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-                'elk.aspectRatio': '2.4',
+                'elk.aspectRatio': '2.0',
                 'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
             };
         } else if (node.type === 'fileNode') {
             elkNode.layoutOptions = {
                 'elk.algorithm': 'layered',
                 'elk.direction': 'DOWN',
-                'elk.padding': '[top=110,left=20,bottom=20,right=20]',
-                'elk.spacing.nodeNode': '20',
-                'elk.layered.spacing.nodeNodeBetweenLayers': '40',
+                'elk.padding': '[top=40,left=15,bottom=15,right=15]',
+                'elk.spacing.nodeNode': '15',
+                'elk.layered.spacing.nodeNodeBetweenLayers': '25',
                 'elk.edgeRouting': 'SPLINES',
             };
         }
@@ -96,15 +118,15 @@ export async function applyElkLayout(
         layoutOptions: {
             'elk.algorithm': 'layered',
             'elk.direction': direction,
-            'elk.spacing.nodeNode': nodeSpacing.toString(),
-            'elk.spacing.edgeNode': '40',
-            'elk.layered.spacing.nodeNodeBetweenLayers': layerSpacing.toString(),
+            'elk.spacing.nodeNode': '60', // Tuned global spacing
+            'elk.spacing.edgeNode': '30',
+            'elk.layered.spacing.nodeNodeBetweenLayers': '80',
             'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-            'elk.padding': '[top=100,left=100,bottom=100,right=100]',
+            'elk.padding': '[top=80,left=80,bottom=80,right=80]',
             'elk.edgeRouting': 'SPLINES',
             'elk.layered.mergeEdges': 'true',
             'elk.separateConnectedComponents': 'true',
-            'elk.spacing.componentComponent': '140',
+            'elk.spacing.componentComponent': '100',
             'elk.aspectRatio': '1.6',
             'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
         },

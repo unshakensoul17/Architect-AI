@@ -16,9 +16,10 @@ export interface SymbolNodeData extends Record<string, unknown> {
     isActive?: boolean;
     isClickable?: boolean;
     isHighlighted?: boolean;
+    zoomLevel?: number; // Injected from GraphCanvas
 }
 
-const SymbolNode = memo(({ data }: NodeProps<Node<SymbolNodeData>>) => {
+const SymbolNode = memo(({ data, style }: NodeProps<Node<SymbolNodeData>> & { style?: React.CSSProperties }) => {
     const {
         label,
         symbolType,
@@ -33,92 +34,91 @@ const SymbolNode = memo(({ data }: NodeProps<Node<SymbolNodeData>>) => {
     // Icon based on symbol type
     const getIcon = () => {
         switch (symbolType) {
-            case 'function':
-                return '𝑓';
-            case 'method':
-                return 'ⓜ';
-            case 'class':
-                return 'ⓒ';
-            case 'interface':
-                return 'ⓘ';
-            case 'enum':
-                return 'ⓔ';
-            case 'variable':
-                return 'ⓥ';
-            case 'type':
-                return 'ⓣ';
-            default:
-                return '●';
+            case 'function': return '𝑓';
+            case 'method': return 'ⓜ';
+            case 'class': return 'ⓒ';
+            case 'interface': return 'ⓘ';
+            case 'enum': return 'ⓔ';
+            case 'variable': return 'ⓥ';
+            case 'type': return 'ⓣ';
+            default: return '●';
         }
     };
 
-    // Calculate opacity and styling based on visibility state
-    const containerOpacity = isDimmed ? 0.2 : 1;
-    const borderWidth = isActive || isHighlighted ? 3 : 2;
-    const boxShadow = isHighlighted
-        ? `0 0 12px ${coupling.color}60, 0 2px 6px rgba(0, 0, 0, 0.2)`
-        : '0 2px 6px rgba(0, 0, 0, 0.15)';
+    // Calculate styling
+    const containerOpacity = isDimmed ? 0.3 : 1;
+    const borderWidth = isActive || isHighlighted ? 2 : 1;
+
+    // Use coupling color for border, but normalized to health colors if possible?
+    // The requirement says "Health should NOT be displayed as text. Instead: Use border color... Healthy #22C55E...".
+    // Coupling metrics usually come with a color. Let's assume coupling.color is already mapped or we map it here.
+    // If coupling.color represents the "heat", we might want to map it to the 3 distinct colors requested.
+    // Let's deduce health from complexity/coupling if raw values available, otherwise use coupling.color but ensure it matches the palette.
+
+    let borderColor = coupling.color; // Default from backend
+    // Override to strict palette if we can infer health
+    // Assuming coupling.normalizedScore is available in some form, but here we have explicit complexity & cbo.
+    // Let's use a heuristic or just use the provided color if it aligns. 
+    // For now, let's respect the "Healthy -> Green, Medium -> Amber, Risky -> Red" rule by mapping the backend color or re-calculating.
+    // Since we don't have the full calculation logic here, we'll trust `coupling.color` usually, 
+    // BUT we should try to snap to the requested palette if it's close.
+    // Or, we can re-implement a simple check:
+    if (complexity > 20 || coupling.cbo > 10) borderColor = '#EF4444';
+    else if (complexity > 10 || coupling.cbo > 5) borderColor = '#F59E0B';
+    else borderColor = '#22C55E';
+
 
     return (
         <div
-            className="nopan px-3 py-2 rounded-lg shadow-md min-w-[140px] max-w-[200px]"
+            className="symbol-node-container"
             style={{
-                backgroundColor: coupling.color + '20',
-                borderColor: coupling.color,
-                borderWidth: `${borderWidth}px`,
-                borderStyle: 'solid',
-                color: 'var(--vscode-editor-foreground)',
+                ...style,
+                backgroundColor: 'var(--vscode-editor-background)',
+                borderRadius: '12px', // More rounded for symbols
+                border: `${borderWidth}px solid ${borderColor}`,
                 opacity: containerOpacity,
-
-                boxShadow,
+                boxShadow: isHighlighted ? `0 0 0 2px ${borderColor}40` : 'none',
+                width: '100%',
+                height: '100%',
                 cursor: isClickable ? 'pointer' : 'default',
                 pointerEvents: isDimmed ? 'none' : 'auto',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                alignItems: 'center',
+                padding: '4px 8px',
+                gap: '8px',
+                fontSize: '14px', // Increased from 13px
+                color: 'var(--vscode-editor-foreground)',
             }}
+            title={`Symbol: ${label}\nType: ${symbolType}\nComplexity: ${complexity}\nCBO: ${coupling.cbo}`}
         >
-            <Handle type="target" position={Position.Top} className="w-2 h-2" />
+            <Handle type="target" position={Position.Top} className="w-1 h-1 !bg-gray-400" />
 
-            <div className="flex items-center gap-2">
-                <span
-                    className="text-lg font-bold"
-                    style={{ color: coupling.color }}
-                    title={`Type: ${symbolType}`}
-                >
-                    {getIcon()}
+            {/* Icon */}
+            <span
+                className="font-bold text-lg leading-none"
+                style={{ color: borderColor, fontSize: '18px' }}
+            >
+                {getIcon()}
+            </span>
+
+            {/* Name - Hidden at low zoom levels via CSS/Parent */}
+            <div className="flex-1 min-w-0 flex flex-col justify-center node-label">
+                <span className="font-medium truncate leading-tight">
+                    {label}
                 </span>
-                <div className="flex-1 min-w-0">
-                    <div className="text-xs font-semibold truncate" title={label}>
-                        {label}
-                    </div>
-                    <div className="text-[10px] opacity-70 flex items-center gap-2">
-                        <span title={`Complexity: ${complexity}`}>C:{complexity}</span>
-                        {data.blastRadius !== undefined && (
-                            <span title={`Blast Radius (Symbols depending on this)`} className="text-red-400 font-bold">
-                                BR:{data.blastRadius}
-                            </span>
-                        )}
-                        <span title={`Coupling (CBO): ${coupling.cbo}`}>CBO:{coupling.cbo}</span>
-                    </div>
-                </div>
-                {isHighlighted && (
-                    <div
-                        className="text-[9px] px-1 py-0.5 rounded"
-                        style={{
-                            backgroundColor: coupling.color + '40',
-                            color: coupling.color,
-                        }}
-                    >
-                        ★
-                    </div>
-                )}
+
+                {/* Optional: Small subtitle for very high zoom? for now just name as requested "Icon + Node Name" */}
             </div>
 
+            {/* Is Sink Indicator */}
             {data.isSink && (
-                <div className="mt-2 text-[9px] font-bold text-red-500 bg-red-500/20 px-1.5 py-0.5 rounded text-center uppercase tracking-wider border border-red-500/30">
-                    Sink
-                </div>
+                <span className="text-[8px] font-bold text-red-500 border border-red-500 rounded px-1" title="Sink">
+                    S
+                </span>
             )}
 
-            <Handle type="source" position={Position.Bottom} className="w-2 h-2" />
+            <Handle type="source" position={Position.Bottom} className="w-1 h-1 !bg-gray-400" />
         </div>
     );
 });

@@ -669,37 +669,45 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     );
 
     // Highlight nodes and edges on hover with rich aesthetics
-    const { interactiveNodes, interactiveNodesDict } = useMemo(() => {
-        const activeId = lockedNodeId || hoveredNodeId;
-        if (!activeId) return { interactiveNodes: nodes, interactiveNodesDict: new Set(nodes.map(n => n.id)) };
+    // Highlight nodes and edges on hover with rich aesthetics
+    // OPTIMIZATION: Use CSS classes for highlighting to preserve reference equality for unconnected nodes
+    const activeId = lockedNodeId || hoveredNodeId;
+    const hasActiveHighlight = !!activeId;
+
+    const { interactiveNodes } = useMemo(() => {
+        if (!activeId) return { interactiveNodes: nodes };
 
         // Identify connected nodes
-        const connectedIds = new Set<string>([activeId]);
+        const connectedIds = new Set<string>();
+        connectedIds.add(activeId);
+
         edges.forEach(edge => {
             if (edge.source === activeId) connectedIds.add(edge.target);
             if (edge.target === activeId) connectedIds.add(edge.source);
         });
 
         const themedNodes = nodes.map(node => {
-            const isActive = node.id === activeId;
             const isConnected = connectedIds.has(node.id);
 
-            return {
-                ...node,
-                style: {
-                    ...node.style,
-                    opacity: isConnected ? 1 : 0.2,
-                    filter: isActive ? 'drop-shadow(0 0 10px rgba(56, 189, 248, 0.5))' : 'none',
-                    transition: 'opacity 0.2s ease, filter 0.2s ease',
-                },
-            };
+            if (isConnected) {
+                // Only create new object for connected nodes (to add class)
+                return {
+                    ...node,
+                    className: `${node.className || ''} highlighted`,
+                    style: {
+                        ...node.style,
+                        zIndex: 10, // Bring to front
+                    },
+                };
+            }
+            // Return original reference for unconnected nodes (CSS will handle dimming)
+            return node;
         });
 
-        return { interactiveNodes: themedNodes, interactiveNodesDict: connectedIds };
-    }, [nodes, edges, hoveredNodeId, lockedNodeId]);
+        return { interactiveNodes: themedNodes };
+    }, [nodes, edges, activeId]);
 
     const interactiveEdges = useMemo(() => {
-        const activeId = lockedNodeId || hoveredNodeId;
         if (!activeId) return edges;
 
         return edges.map((edge) => {
@@ -709,44 +717,32 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             const isStructural = edge.id.startsWith('struct-');
 
             if (isConnected) {
-                // Sky Blue for calls (outgoing), Amber for active path (incoming)
+                // Highlighting specific edges requires style updates (SVG props)
+                // We accept re-renders here for the active edges
                 const highlightColor = isOutgoing ? '#38bdf8' : '#f59e0b';
 
                 return {
                     ...edge,
-                    type: isStructural ? 'smoothstep' : 'default', // Using 'default' (bezier) for smoother look on highlight
+                    className: 'highlighted',
+                    type: 'default', // Bezier curves (like old)
                     style: {
                         ...edge.style,
-                        opacity: 1.0,
-                        strokeWidth: 4,
                         stroke: isStructural ? '#ffffff' : highlightColor,
-                        strokeDasharray: isStructural ? '5,5' : '0',
-                        filter: isStructural ? 'none' : `drop-shadow(0 0 8px ${highlightColor})`,
-                        transition: 'opacity 0.2s ease, stroke-width 0.2s ease',
-                        zIndex: 1000, // Bring to front
+                        strokeWidth: 4,
+                        strokeDasharray: '0', // Solid lines, no dashes
+                        zIndex: 1000,
                     },
-                    markerEnd: {
-                        ...(edge.markerEnd as any),
-                        color: isStructural ? '#ffffff' : highlightColor,
-                        width: 25,
-                        height: 25,
-                    },
+                    animated: false, // Static, no animation
                 };
             }
 
-            return {
-                ...edge,
-                style: {
-                    ...edge.style,
-                    opacity: 0.1,
-                    stroke: '#475569',
-                    strokeWidth: 1,
-                    transition: 'opacity 0.2s ease',
-                },
-                animated: false,
-            };
+            // For unconnected edges, we can also use class-based dimming if we don't change style
+            // BUT, edges need 'opacity' prop often or style.
+            // Let's try to return original edge and use CSS for dimming if possible.
+            // react-flow edges have a 'style' prop. CSS targeting .react-flow__edge:not(.highlighted) works.
+            return edge;
         });
-    }, [edges, hoveredNodeId, lockedNodeId]);
+    }, [edges, activeId]);
 
     // Fit view only once when nodes first load (prevents blinking)
     useEffect(() => {
@@ -762,13 +758,50 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
 
 
 
+    // Tooltip State
+    const [tooltipData, setTooltipData] = useState<{ x: number, y: number, content: any, type: string } | null>(null);
+    const hoverTimer = useRef<NodeJS.Timeout | null>(null);
+
     // Handle node hover
-    const handleNodeMouseEnter = useCallback((_event: React.MouseEvent, node: Node) => {
+    const handleNodeMouseEnter = useCallback((event: React.MouseEvent, node: Node) => {
         setHoveredNodeId(node.id);
+
+        // Tooltip Logic: Delay 400ms
+        if (hoverTimer.current) clearTimeout(hoverTimer.current);
+
+        const clientX = event.clientX;
+        const clientY = event.clientY;
+        const nodeData = node.data as any;
+
+        hoverTimer.current = setTimeout(() => {
+            // Only show tooltip if we have relevant metrics
+            const content: any = {};
+            let hasContent = false;
+
+            if (nodeData.complexity !== undefined || nodeData.avgComplexity !== undefined) {
+                content.complexity = nodeData.complexity ?? nodeData.avgComplexity;
+                hasContent = true;
+            }
+            if (nodeData.blastRadius !== undefined || nodeData.totalBlastRadius !== undefined) {
+                content.blastRadius = nodeData.blastRadius ?? nodeData.totalBlastRadius;
+                hasContent = true;
+            }
+
+            if (hasContent) {
+                setTooltipData({
+                    x: clientX,
+                    y: clientY,
+                    content,
+                    type: node.type || 'node'
+                });
+            }
+        }, 400);
     }, []);
 
     const handleNodeMouseLeave = useCallback(() => {
         setHoveredNodeId(null);
+        if (hoverTimer.current) clearTimeout(hoverTimer.current);
+        setTooltipData(null);
     }, []);
 
     // Handle node click based on view mode
@@ -785,6 +818,26 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         },
         [onNodeClick, setFocusedNodeId, focusNode]
     );
+
+    // Zoom Tier State for Progressive Disclosure (Throttled re-renders)
+    const [zoomTier, setZoomTier] = useState<'low' | 'medium' | 'high'>('medium');
+
+    // Zoom Level Classes matched to Tiers
+    // < 0.6: Zoom Low (Icon + Name)
+    // 0.6 - 1.2: Zoom Medium (Icon + Name + Symbol Count)
+    // > 1.2: Zoom High (Icon + Name + Symbol Count (+ Ext details?))
+    const zoomClass = `zoom-${zoomTier}`;
+
+    const onMove = useCallback((_event: any, viewport: { x: number; y: number; zoom: number }) => {
+        const z = viewport.zoom;
+        let newTier: 'low' | 'medium' | 'high' = 'medium';
+
+        if (z < 0.6) newTier = 'low';
+        else if (z >= 0.6 && z < 1.2) newTier = 'medium';
+        else newTier = 'high';
+
+        setZoomTier(prev => prev !== newTier ? newTier : prev);
+    }, []);
 
     // Handle node double click to open file
     const handleNodeDoubleClick = useCallback(
@@ -899,6 +952,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
 
     return (
         <div
+            className={`w-full h-full relative flex flex-col graph-wrapper ${zoomClass} ${hasActiveHighlight ? 'has-highlight' : ''}`}
             style={{
                 width: '100%',
                 height: '100%',
@@ -944,6 +998,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     defaultEdgeOptions={{
                         type: 'default',
                     }}
+                    onMove={onMove}
                 >
                     <Background gap={20} />
                     <Controls />
@@ -989,6 +1044,77 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     </div>
                 </ReactFlow>
             </div>
+
+            {/* Layout Loading State */}
+            {isLayouting && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-50 pointer-events-none">
+                    <div className="text-white text-lg font-bold animate-pulse">
+                        Calculating Layout...
+                    </div>
+                </div>
+            )}
+
+            {/* Global Tooltip */}
+            {tooltipData && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        top: tooltipData.y + 10,
+                        left: tooltipData.x + 10,
+                        backgroundColor: 'var(--vscode-editor-background)',
+                        border: '1px solid var(--vscode-widget-border)',
+                        borderRadius: '6px',
+                        padding: '8px 12px',
+                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.25)',
+                        zIndex: 9999,
+                        color: 'var(--vscode-editor-foreground)',
+                        fontSize: '11px',
+                        pointerEvents: 'none',
+                    }}
+                >
+                    {tooltipData.content.complexity !== undefined && (
+                        <div className="flex items-center gap-2 mb-1">
+                            <span className="opacity-70">Complexity:</span>
+                            <span className="font-bold">{tooltipData.content.complexity.toFixed(1)}</span>
+                        </div>
+                    )}
+                    {tooltipData.content.blastRadius !== undefined && (
+                        <div className="flex items-center gap-2">
+                            <span className="opacity-70">Blast Radius:</span>
+                            <span className="font-bold text-red-500">{tooltipData.content.blastRadius}</span>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Global Styles for Zoom Levels (injected here) */}
+            <style>{`
+                /* Progressive Disclosure Logic */
+                
+                /* Low Zoom (< 0.6): Hide metadata, minimal view */
+                .graph-wrapper.zoom-low .file-node-container .node-meta,
+                .graph-wrapper.zoom-low .domain-node-container .node-meta,
+                .graph-wrapper.zoom-low .symbol-node-container .node-label { 
+                    display: none; 
+                }
+                
+                /* Hover Dimming Logic */
+                .graph-wrapper.has-highlight .react-flow__node:not(.highlighted) {
+                    opacity: 0.2;
+                    transition: opacity 0.2s ease;
+                }
+                
+                .graph-wrapper.has-highlight .react-flow__edge:not(.highlighted) {
+                    opacity: 0.1;
+                    transition: opacity 0.2s ease;
+                }
+                
+                .react-flow__node.highlighted {
+                    filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.5));
+                    transition: filter 0.2s ease;
+                }
+                
+            `}</style>
         </div>
     );
 });

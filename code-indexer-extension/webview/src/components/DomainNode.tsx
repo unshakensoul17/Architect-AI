@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 
 export interface DomainNodeData extends Record<string, unknown> {
     domain: string;
@@ -14,27 +14,25 @@ export interface DomainNodeData extends Record<string, unknown> {
         totalBlastRadius?: number;
     };
     collapsed: boolean;
+    onToggleCollapse?: () => void;
     // Progressive visibility states
     isDimmed?: boolean;
     isActive?: boolean;
     isClickable?: boolean;
+    zoomLevel?: number; // Injected from GraphCanvas
 }
 
-interface DomainNodeProps {
-    data: DomainNodeData;
-}
-
-const DomainNode = memo(({ data, style }: { data: DomainNodeData; style?: React.CSSProperties }) => {
+const DomainNode = memo(({ data, style }: NodeProps<Node<DomainNodeData>> & { style?: React.CSSProperties }) => {
     const {
         domain,
         health,
         collapsed,
+        onToggleCollapse,
         isDimmed = false,
         isActive = false,
         isClickable = true
     } = data;
-    const { healthScore, status, symbolCount, avgComplexity, coupling } = health;
-
+    const { status, symbolCount } = health;
 
     // Get domain display name and icon
     const domainDisplayNames: Record<string, string> = {
@@ -53,235 +51,81 @@ const DomainNode = memo(({ data, style }: { data: DomainNodeData; style?: React.
 
     const displayName = domainDisplayNames[domain] || `📦 ${domain}`;
 
-    // Health color
+    // Health color mapping
+    // Healthy: #22C55E (Green), Medium: #F59E0B (Amber), Risky: #EF4444 (Red)
     const healthColors = {
-        healthy: {
-            border: '#10b981',
-            bg: '#10b98120',
-            text: '#10b981',
-        },
-        warning: {
-            border: '#fbbf24',
-            bg: '#fbbf2420',
-            text: '#fbbf24',
-        },
-        critical: {
-            border: '#ef4444',
-            bg: '#ef444420',
-            text: '#ef4444',
-        },
+        healthy: '#22C55E',
+        warning: '#F59E0B',
+        critical: '#EF4444',
     };
 
-    const colors = healthColors[status];
+    const borderColor = healthColors[status] || healthColors.healthy;
 
-    // Health emoji
-    const healthEmoji = status === 'healthy' ? '✅' : status === 'warning' ? '⚠️' : '❌';
-
-    // Calculate opacity and styling based on visibility state
+    // Calculate styling
     const containerOpacity = isDimmed ? 0.3 : 1;
-    const borderWidth = isActive ? 4 : 3;
-    const boxShadow = isActive
-        ? `0 0 20px ${colors.border}40, 0 4px 12px rgba(0, 0, 0, 0.15)`
-        : '0 4px 12px rgba(0, 0, 0, 0.15)';
+    const borderWidth = isActive ? 2 : 1;
 
     return (
         <div
+            className="domain-node-container"
             style={{
                 ...style,
-                minHeight: collapsed ? '120px' : '200px',
-                border: `${borderWidth}px solid ${colors.border}`,
-                borderRadius: '12px',
                 backgroundColor: 'var(--vscode-editor-background)',
-                padding: 0,
-                boxShadow,
+                borderRadius: '40px', // Cylindrical / Rounded Container
+                border: `${borderWidth}px solid ${borderColor}`,
                 opacity: containerOpacity,
-
+                boxShadow: isActive ? `0 0 0 2px ${borderColor}40` : 'none',
+                width: '100%',
+                height: '100%',
                 cursor: isClickable ? 'pointer' : 'default',
                 pointerEvents: isDimmed ? 'none' : 'auto',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                fontSize: '18px',
+                padding: '0 20px', // Extra padding
+                color: 'var(--vscode-editor-foreground)',
             }}
-            className={isClickable ? 'hover:ring-2 hover:ring-blue-400' : ''}
+            title={`Domain: ${domain}\nStatus: ${status}\nHealth: ${health.healthScore}%`}
         >
-            <Handle type="target" position={Position.Top} className="w-4 h-4" style={{ background: colors.border }} />
+            <Handle type="target" position={Position.Top} className="w-1.5 h-1.5 !bg-gray-400" />
 
-            {/* Header */}
+            {/* Title Row */}
             <div
+                className="flex items-center gap-2 px-3 py-2"
                 style={{
-                    padding: '16px',
-                    borderBottom: `2px solid ${colors.border}`,
-                    background: colors.bg,
-                    borderTopLeftRadius: '9px',
-                    borderTopRightRadius: '9px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
+                    backgroundColor: isActive ? borderColor + '10' : 'transparent',
                 }}
             >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    {/* Collapse Toggle */}
-                    <div
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            if (typeof data.onToggleCollapse === 'function') {
-                                data.onToggleCollapse();
-                            }
-                        }}
-                        style={{
-                            cursor: 'pointer',
-                            fontSize: '16px',
-                            width: '24px',
-                            height: '24px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            borderRadius: '4px',
-                            backgroundColor: colors.bg,
-                            color: colors.text,
-                        }}
-                        className="hover:bg-opacity-80"
-                    >
-                        {collapsed ? '▶' : '▼'}
-                    </div>
+                {/* Name & Icon */}
+                <span className="font-bold truncate flex-1 node-label" style={{ fontSize: '18px' }}>
+                    {displayName}
+                </span>
 
-                    <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-                        {displayName}
-                    </div>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <div
-                        style={{
-                            fontSize: '11px',
-                            padding: '4px 8px',
-                            borderRadius: '12px',
-                            backgroundColor: 'var(--vscode-badge-background)',
-                            color: 'var(--vscode-badge-foreground)',
-                        }}
-                    >
-                        {symbolCount} symbols
-                    </div>
-                </div>
-
-                {/* Health Badge */}
+                {/* Collapse Toggle */}
                 <div
-                    style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '14px',
-                        fontWeight: 'bold',
-                        color: colors.text,
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        if (typeof onToggleCollapse === 'function') {
+                            onToggleCollapse();
+                        }
                     }}
+                    className="cursor-pointer opacity-60 hover:opacity-100 px-1"
                 >
-                    <span>{healthEmoji}</span>
-                    <span>{healthScore}% Healthy</span>
+                    {collapsed ? '▶' : '▼'}
                 </div>
             </div>
 
-            {/* Body */}
+            {/* Metadata Row - Progressive Disclosure */}
+            {/* Using a specific class 'node-meta' helps targeting with CSS based on zoom */}
             {!collapsed && (
-                <div style={{ padding: '16px' }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                        {/* Complexity */}
-                        <div>
-                            <div
-                                style={{
-                                    fontSize: '11px',
-                                    opacity: 0.7,
-                                    marginBottom: '4px',
-                                    textTransform: 'uppercase',
-                                    letterSpacing: '0.5px',
-                                }}
-                            >
-                                Avg Complexity
-                            </div>
-                            <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-                                {avgComplexity.toFixed(1)}
-                            </div>
-                        </div>
-
-                        {/* Coupling */}
-                        <div>
-                            <div
-                                style={{
-                                    fontSize: '11px',
-                                    opacity: 0.7,
-                                    marginBottom: '4px',
-                                    textTransform: 'uppercase',
-                                    letterSpacing: '0.5px',
-                                }}
-                            >
-                                Coupling Ratio
-                            </div>
-                            <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-                                {(coupling * 100).toFixed(0)}%
-                            </div>
-                        </div>
-
-                        {/* Fragility (Folders only) */}
-                        {health.avgFragility !== undefined && (
-                            <div>
-                                <div
-                                    style={{
-                                        fontSize: '11px',
-                                        opacity: 0.7,
-                                        marginBottom: '4px',
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.5px',
-                                    }}
-                                >
-                                    Total Fragility
-                                </div>
-                                <div style={{ fontSize: '20px', fontWeight: 'bold', color: health.avgFragility > 100 ? '#ef4444' : 'inherit' }}>
-                                    {health.avgFragility.toFixed(0)}
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Blast Radius (Folders only) */}
-                        {health.totalBlastRadius !== undefined && (
-                            <div>
-                                <div
-                                    style={{
-                                        fontSize: '11px',
-                                        opacity: 0.7,
-                                        marginBottom: '4px',
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.5px',
-                                    }}
-                                >
-                                    Max Blast Radius
-                                </div>
-                                <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#ef4444' }}>
-                                    {health.totalBlastRadius}
-                                </div>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Health Bar */}
-                    <div style={{ marginTop: '16px' }}>
-                        <div
-                            style={{
-                                height: '8px',
-                                backgroundColor: 'var(--vscode-input-background)',
-                                borderRadius: '4px',
-                                overflow: 'hidden',
-                            }}
-                        >
-                            <div
-                                style={{
-                                    width: `${healthScore}%`,
-                                    height: '100%',
-                                    backgroundColor: colors.border,
-                                    transition: 'width 0.3s ease',
-                                }}
-                            />
-                        </div>
-                    </div>
+                <div className="node-meta px-3 pb-2 flex items-center justify-between text-[10px] opacity-70">
+                    <span className="symbol-count">{symbolCount} symbols</span>
                 </div>
             )}
 
-            <Handle type="source" position={Position.Bottom} className="w-4 h-4" style={{ background: colors.border }} />
+            <Handle type="source" position={Position.Bottom} className="w-1.5 h-1.5 !bg-gray-400" />
         </div>
     );
 });
