@@ -78,12 +78,16 @@ export async function applyElkLayout(
 
         // Add layout options based on type
         if (node.type === 'domainNode') {
+            // Push files to bottom for nested folders (top=110), keep root domains tighter (top=60)
+            const padding = isNestedFolder(node)
+                ? '[top=110,left=15,bottom=15,right=15]'
+                : '[top=60,left=20,bottom=20,right=20]';
+
             elkNode.layoutOptions = {
                 'elk.algorithm': 'layered',
                 'elk.direction': 'DOWN',
-                // Stitched Look: Top padding matches header
-                'elk.padding': '[top=50,left=20,bottom=20,right=20]',
-                'elk.spacing.nodeNode': '30', // Tuned
+                'elk.padding': padding,
+                'elk.spacing.nodeNode': '30',
                 'elk.layered.spacing.nodeNodeBetweenLayers': '40',
                 'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
                 'elk.aspectRatio': '2.0',

@@ -548,7 +548,10 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         });
         const finalNodes = Array.from(uniqueNodesMap.values());
 
-        // Additionally filter by depth in flow mode
+        // Additionally filter by depth in flow mode and prepare final sets
+        let nodesToReturn = finalNodes;
+        let edgesToReturn = result.visibleEdges;
+
         if (currentMode === 'flow') {
             const depthFilteredNodes = finalNodes.filter(node => {
                 if (maxDepth === 0) return node.type === 'domainNode';
@@ -561,17 +564,31 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                 depthFilteredNodeIds.has(edge.source) && depthFilteredNodeIds.has(edge.target)
             );
 
-            return { visibleNodes: depthFilteredNodes, visibleEdges: depthFilteredEdges };
+            nodesToReturn = depthFilteredNodes;
+            edgesToReturn = depthFilteredEdges;
+        }
+
+        // DEDUPLICATION: Combine overlapping edges for cleaner Trace/Flow view
+        if (currentMode === 'flow' || currentMode === 'trace') {
+            const uniqueEdgeMap = new Map<string, Edge>();
+            edgesToReturn.forEach(edge => {
+                const key = `${edge.source}->${edge.target}`;
+                // Keep the first edge found (or prioritize one with specific properties if needed)
+                if (!uniqueEdgeMap.has(key)) {
+                    uniqueEdgeMap.set(key, edge);
+                }
+            });
+            edgesToReturn = Array.from(uniqueEdgeMap.values());
         }
 
         const filterTime = perfMonitor.endTimer('filter');
         perfMonitor.recordMetrics({
             filterTime,
-            nodeCount: finalNodes.length,
-            edgeCount: result.visibleEdges.length,
+            nodeCount: nodesToReturn.length,
+            edgeCount: edgesToReturn.length,
         });
 
-        return { visibleNodes: finalNodes, visibleEdges: result.visibleEdges };
+        return { visibleNodes: nodesToReturn, visibleEdges: edgesToReturn };
     }, [allNodes, allEdges, currentMode, focusedNodeId, relatedNodeIdsKey, executionFlows, searchQuery, maxDepth]);
 
     // Handle search-driven focus (Only happens when searchQuery changes)
@@ -671,76 +688,108 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     // Highlight nodes and edges on hover with rich aesthetics
     // Highlight nodes and edges on hover with rich aesthetics
     // OPTIMIZATION: Use CSS classes for highlighting to preserve reference equality for unconnected nodes
-    const activeId = lockedNodeId || hoveredNodeId;
+
+    // Ensure active/locked node actually exists in current view (prevents stale locks from dimming everything)
+    const activeId = useMemo(() => {
+        const candidateId = lockedNodeId || hoveredNodeId;
+        if (!candidateId) return null;
+        // Verify existence in current nodes list (O(n) but safe, or O(1) if map used - but nodes length is small enough usually)
+        return nodes.some(n => n.id === candidateId) ? candidateId : null;
+    }, [lockedNodeId, hoveredNodeId, nodes]);
+
     const hasActiveHighlight = !!activeId;
 
-    const { interactiveNodes } = useMemo(() => {
-        if (!activeId) return { interactiveNodes: nodes };
+    // Identify connected nodes (Memoized)
+    const connectedNodeIds = useMemo(() => {
+        const ids = new Set<string>();
+        if (activeId) {
+            ids.add(activeId);
+            edges.forEach(edge => {
+                if (edge.source === activeId) ids.add(edge.target);
+                if (edge.target === activeId) ids.add(edge.source);
+            });
+        }
+        return ids;
+    }, [activeId, edges]);
 
-        // Identify connected nodes
-        const connectedIds = new Set<string>();
-        connectedIds.add(activeId);
+    // Memoize interactive nodes with styles
+    const interactiveNodes = useMemo(() => {
+        const result = nodes.map(node => {
+            const isHovered = node.id === hoveredNodeId;
+            const isConnected = activeId ? connectedNodeIds.has(node.id) : false;
 
-        edges.forEach(edge => {
-            if (edge.source === activeId) connectedIds.add(edge.target);
-            if (edge.target === activeId) connectedIds.add(edge.source);
+            // Highlight Logic:
+            // 1. If NO node is hovered, ALL are active (default state).
+            // 2. If a node IS hovered, only IT and its CONNECTED neighbors are active.
+            // 3. Everything else is dimmed.
+            const isDimmed = activeId !== null && !isHovered && !isConnected;
+            const isActive = activeId === null || isHovered || isConnected;
+
+            return {
+                ...node,
+                className: isHovered || isConnected ? 'highlighted' : '',
+                data: {
+                    ...node.data,
+                    isDimmed,
+                    isActive,
+                    isClickable: true,
+                },
+                // Z-Index Management:
+                // Hovered/Connected nodes pop to front (zIndex 1000+)
+                // FileNodes generally above DomainNodes (zIndex 10 vs 1)
+                zIndex: isHovered ? 2000 : (isConnected ? 1500 : (node.type === 'fileNode' ? 10 : 1)),
+            };
         });
 
-        const themedNodes = nodes.map(node => {
-            const isConnected = connectedIds.has(node.id);
-
-            if (isConnected) {
-                // Only create new object for connected nodes (to add class)
-                return {
-                    ...node,
-                    className: `${node.className || ''} highlighted`,
-                    style: {
-                        ...node.style,
-                        zIndex: 10, // Bring to front
-                    },
-                };
-            }
-            // Return original reference for unconnected nodes (CSS will handle dimming)
-            return node;
+        // SORTING: Render DomainNodes FIRST (bottom), then FileNodes (top)
+        // This ensures FileNodes are physically later in DOM, appearing on top of Domains even without z-index
+        return result.sort((a, b) => {
+            if (a.type === 'domainNode' && b.type !== 'domainNode') return -1;
+            if (a.type !== 'domainNode' && b.type === 'domainNode') return 1;
+            return 0;
         });
-
-        return { interactiveNodes: themedNodes };
-    }, [nodes, edges, activeId]);
+    }, [nodes, hoveredNodeId, activeId, connectedNodeIds]);
 
     const interactiveEdges = useMemo(() => {
         if (!activeId) return edges;
 
-        return edges.map((edge) => {
+        const mappedEdges = edges.map((edge) => {
             const isOutgoing = edge.source === activeId;
             const isIncoming = edge.target === activeId;
             const isConnected = isOutgoing || isIncoming;
             const isStructural = edge.id.startsWith('struct-');
 
+            // Pause animation for all edges when hovering (as requested)
+            const baseEdge = { ...edge, animated: false };
+
             if (isConnected) {
-                // Highlighting specific edges requires style updates (SVG props)
-                // We accept re-renders here for the active edges
-                const highlightColor = isOutgoing ? '#38bdf8' : '#f59e0b';
+                const highlightColor = isOutgoing ? '#38bdf8' : '#f59e0b'; // Light Blue or Amber
 
                 return {
-                    ...edge,
+                    ...baseEdge,
                     className: 'highlighted',
-                    type: 'default', // Bezier curves (like old)
+                    type: 'default', // Bezier curves
                     style: {
                         ...edge.style,
                         stroke: isStructural ? '#ffffff' : highlightColor,
                         strokeWidth: 4,
-                        strokeDasharray: '0', // Solid lines, no dashes
+                        strokeDasharray: '0',
+                        opacity: 1, // Ensure visible
                         zIndex: 1000,
                     },
-                    animated: false, // Static, no animation
                 };
             }
 
-            // For unconnected edges, we can also use class-based dimming if we don't change style
-            // BUT, edges need 'opacity' prop often or style.
-            // Let's try to return original edge and use CSS for dimming if possible.
-            // react-flow edges have a 'style' prop. CSS targeting .react-flow__edge:not(.highlighted) works.
-            return edge;
+            return baseEdge;
+        });
+
+        // Sort: Non-highlighted first, Highlighted last (on top)
+        return mappedEdges.sort((a, b) => {
+            const aHighlight = a.className === 'highlighted';
+            const bHighlight = b.className === 'highlighted';
+            if (aHighlight && !bHighlight) return 1;
+            if (!aHighlight && bHighlight) return -1;
+            return 0;
         });
     }, [edges, activeId]);
 

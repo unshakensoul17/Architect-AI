@@ -66,12 +66,13 @@ const FileNode = memo(({ data, style }: NodeProps<Node<FileNodeData>> & { style?
                 width: '100%', // Fill the ELK-assigned width
                 height: '100%', // Fill the ELK-assigned height
                 cursor: isClickable ? 'pointer' : 'default',
-                pointerEvents: isDimmed ? 'none' : 'auto',
+                pointerEvents: 'all', // ALWAYS allow interaction
+                zIndex: 1000, // Force on top of parent domains
                 transition: 'all 0.2s ease',
                 display: 'flex',
                 flexDirection: 'column',
                 overflow: 'hidden',
-                fontSize: '20px', // Increased from 16px
+                fontSize: '22px', // Increased from 20px
                 padding: '0 20px', // Extra padding for curved edges
                 color: 'var(--vscode-editor-foreground)',
             }}
@@ -81,16 +82,16 @@ const FileNode = memo(({ data, style }: NodeProps<Node<FileNodeData>> & { style?
 
             {/* Title Row */}
             <div
-                className="flex items-center gap-2 px-2 py-1.5"
+                className="flex items-center justify-center gap-2 px-2 py-1.5 w-full"
                 style={{
                     backgroundColor: isActive ? borderColor + '10' : 'transparent',
                 }}
             >
                 {/* Icon */}
-                <span style={{ fontSize: '22px', lineHeight: 1 }}>📄</span>
+                <span style={{ fontSize: '26px', lineHeight: 1 }}>📄</span>
 
                 {/* Name */}
-                <span className="font-medium truncate flex-1 node-label" style={{ fontSize: '20px' }}>
+                <span className="font-medium truncate node-label text-center" style={{ fontSize: '24px', flex: 1 }}>
                     {fileName}
                 </span>
 
