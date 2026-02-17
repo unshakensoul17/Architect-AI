@@ -42,7 +42,7 @@ const FileNode = memo(({ data, style }: NodeProps<Node<FileNodeData>> & { style?
 
     // Calculate styling
     const containerOpacity = isDimmed ? 0.3 : 1;
-    const borderWidth = isActive ? 2 : 1;
+    const borderWidth = isActive ? 5 : 3; // Thicker border
 
     // Zoom-based details class (handled by parent container class in CSS usually, but here we can use conditional rendering if needed)
     // We'll use specific classes that GraphCanvas will toggle on the container, but we can also use the data.zoomLevel if passed
@@ -71,7 +71,7 @@ const FileNode = memo(({ data, style }: NodeProps<Node<FileNodeData>> & { style?
                 display: 'flex',
                 flexDirection: 'column',
                 overflow: 'hidden',
-                fontSize: '16px', // Increased from 14px
+                fontSize: '20px', // Increased from 16px
                 padding: '0 20px', // Extra padding for curved edges
                 color: 'var(--vscode-editor-foreground)',
             }}
@@ -87,10 +87,10 @@ const FileNode = memo(({ data, style }: NodeProps<Node<FileNodeData>> & { style?
                 }}
             >
                 {/* Icon */}
-                <span style={{ fontSize: '18px', lineHeight: 1 }}>📄</span>
+                <span style={{ fontSize: '22px', lineHeight: 1 }}>📄</span>
 
                 {/* Name */}
-                <span className="font-medium truncate flex-1 node-label" style={{ fontSize: '16px' }}>
+                <span className="font-medium truncate flex-1 node-label" style={{ fontSize: '20px' }}>
                     {fileName}
                 </span>
 

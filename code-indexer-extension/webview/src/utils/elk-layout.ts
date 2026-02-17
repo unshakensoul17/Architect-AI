@@ -54,17 +54,19 @@ export async function applyElkLayout(
         if (node.type === 'domainNode') {
             if (isNestedFolder(node)) {
                 // Folder (Medium)
-                width = 400; // Was 560, Orig 280
-                height = 250; // Was 360, Orig 180
+                // Width reduced to fit content better (File=280 + Padding=~40 => 320 min)
+                width = 340;
+                height = 250;
             } else {
                 // Root Domain (Largest)
-                width = 600; // Was 800, Orig 400
-                height = 380; // Was 500, Orig 250
+                // Width reduced
+                width = 480;
+                height = 380;
             }
         } else if (node.type === 'fileNode') {
             // File (Small)
-            width = 280; // Was 400, Orig 200
-            height = 120; // Was 180, Orig 90
+            width = 280;
+            height = 120;
         }
 
         const elkNode: ElkNode = {

@@ -63,7 +63,7 @@ const DomainNode = memo(({ data, style }: NodeProps<Node<DomainNodeData>> & { st
 
     // Calculate styling
     const containerOpacity = isDimmed ? 0.3 : 1;
-    const borderWidth = isActive ? 2 : 1;
+    const borderWidth = isActive ? 5 : 3; // Thicker border as requested
 
     return (
         <div
@@ -83,7 +83,7 @@ const DomainNode = memo(({ data, style }: NodeProps<Node<DomainNodeData>> & { st
                 display: 'flex',
                 flexDirection: 'column',
                 overflow: 'hidden',
-                fontSize: '18px',
+                fontSize: '24px', // Increased from 18px
                 padding: '0 20px', // Extra padding
                 color: 'var(--vscode-editor-foreground)',
             }}
@@ -99,7 +99,7 @@ const DomainNode = memo(({ data, style }: NodeProps<Node<DomainNodeData>> & { st
                 }}
             >
                 {/* Name & Icon */}
-                <span className="font-bold truncate flex-1 node-label" style={{ fontSize: '18px' }}>
+                <span className="font-bold truncate flex-1 node-label" style={{ fontSize: '24px' }}>
                     {displayName}
                 </span>
 
