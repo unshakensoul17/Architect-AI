@@ -62,22 +62,28 @@ export function applyViewMode(
     allEdges: Edge[],
     context: FilterContext
 ): FilteredGraph {
-    // Apply search filter if query exists and we are in default/architecture mode
-    // Or maybe search overrides everything?
-    if (context.searchQuery && context.searchQuery.length > 2) {
-        return filterSearchMode(allNodes, allEdges, context);
-    }
-
+    // 1. First, apply base filtering based on the current view mode
+    let result: FilteredGraph;
     switch (context.mode) {
         case 'architecture':
-            return filterArchitectureMode(allNodes, allEdges, context);
+            result = filterArchitectureMode(allNodes, allEdges, context);
+            break;
         case 'flow':
-            return filterFlowMode(allNodes, allEdges, context);
+            result = filterFlowMode(allNodes, allEdges, context);
+            break;
         case 'trace':
-            return filterTraceMode(allNodes, allEdges, context);
+            result = filterTraceMode(allNodes, allEdges, context);
+            break;
         default:
-            return { visibleNodes: allNodes, visibleEdges: allEdges };
+            result = { visibleNodes: allNodes, visibleEdges: allEdges };
     }
+
+    // 2. If a search query is active, further filter the results
+    if (context.searchQuery && context.searchQuery.length > 2) {
+        return filterBySearch(result.visibleNodes, result.visibleEdges, context.searchQuery);
+    }
+
+    return result;
 }
 
 /**
@@ -108,76 +114,78 @@ function filterTraceMode(
 }
 
 /**
- * Semantic Search Mode: Filter by AI tags and name
+ * Semantic Search Refinement: Filter existing results by query
+ * Physically removes non-matches to prevent layout congestion
  */
-function filterSearchMode(
-    allNodes: Node[],
-    allEdges: Edge[],
-    context: FilterContext
+function filterBySearch(
+    visibleNodes: Node[],
+    visibleEdges: Edge[],
+    query: string
 ): FilteredGraph {
-    const query = context.searchQuery?.toLowerCase() || '';
-    if (!query) return { visibleNodes: allNodes, visibleEdges: allEdges };
+    const q = query.toLowerCase();
 
-    const visibleNodes = allNodes.map((node) => {
+    // 1. Identify direct matching nodes
+    const matchingNodeIds = new Set<string>();
+    visibleNodes.forEach(node => {
         const data = node.data as any;
-        const matchesName = data.label?.toLowerCase().includes(query) || data.filePath?.toLowerCase().includes(query);
-
-        // Check AI tags
+        const name = data.name || data.label || '';
+        const filePath = data.filePath || '';
+        const domain = data.domainName || data.domain || '';
         const tags = data.searchTags || [];
-        const matchesTags = tags.some((tag: string) => tag.toLowerCase().includes(query));
 
-        const isMatch = matchesName || matchesTags;
-        const targetOpacity = isMatch ? 1.0 : 0.15;
+        const matches =
+            name.toLowerCase().includes(q) ||
+            filePath.toLowerCase().includes(q) ||
+            domain.toLowerCase().includes(q) ||
+            tags.some((tag: string) => tag.toLowerCase().includes(q));
 
-        // Skip cloning if state hasn't changed
-        if (data.opacity === targetOpacity &&
-            data.isHighlighted === isMatch) {
-            return node;
+        if (matches) {
+            matchingNodeIds.add(node.id);
         }
-
-        return {
-            ...node,
-            data: {
-                ...node.data,
-                opacity: targetOpacity,
-                isHighlighted: isMatch,
-                disableHeatmap: true,
-            },
-            style: {
-                ...node.style,
-                opacity: targetOpacity,
-                border: isMatch ? '2px solid #3b82f6' : undefined,
-            },
-        };
     });
 
-    // Build lookup map for O(1) node access
-    const nodeMap = new Map(visibleNodes.map(n => [n.id, n]));
+    // 2. Collect matching nodes AND their parents to preserve hierarchy structure
+    // This prevents React Flow children from "floating" or stacking at the origin.
+    const nodesToKeep = new Set<string>();
+    const nodeLookup = new Map(visibleNodes.map(n => [n.id, n]));
 
-    // Edges are dimmed unless both nodes match
-    const visibleEdges = allEdges.map((edge) => {
-        const sourceNode = nodeMap.get(edge.source);
-        const targetNode = nodeMap.get(edge.target);
-        const targetDomain = (targetNode?.data as any)?.domain;
-        const sourceMatch = (sourceNode?.data as any)?.isHighlighted;
-        const targetMatch = (targetNode?.data as any)?.isHighlighted;
-
-        const isVisible = sourceMatch && targetMatch;
-        const baseStyle = DEFAULT_EDGE_STYLE(targetDomain);
-        const targetOpacity = isVisible ? 1.0 : 0.1;
-
-        return {
-            ...edge,
-            ...baseStyle,
-            style: {
-                ...baseStyle.style,
-                opacity: targetOpacity,
-                strokeWidth: isVisible ? 2 : 1,
-            }
-        };
+    matchingNodeIds.forEach(id => {
+        let currentId: string | undefined = id;
+        while (currentId) {
+            nodesToKeep.add(currentId);
+            const node = nodeLookup.get(currentId);
+            currentId = node?.parentId;
+        }
     });
 
-    return { visibleNodes, visibleEdges };
+    // 3. Finalize node list with highlight styles
+    const finalNodes = visibleNodes
+        .filter(node => nodesToKeep.has(node.id))
+        .map(node => {
+            const isDirectMatch = matchingNodeIds.has(node.id);
+            return {
+                ...node,
+                data: {
+                    ...node.data,
+                    opacity: 1.0,
+                    isHighlighted: isDirectMatch,
+                    disableHeatmap: true,
+                },
+                style: {
+                    ...node.style,
+                    border: isDirectMatch ? '2px solid var(--vscode-focusBorder)' : node.style?.border,
+                    boxShadow: isDirectMatch ? '0 0 12px rgba(56, 189, 248, 0.4)' : node.style?.boxShadow,
+                }
+            };
+        });
+
+    // 4. Update edges to only connect preserved nodes
+    const finalNodeIds = new Set(finalNodes.map(n => n.id));
+    const finalEdges = visibleEdges.filter(edge =>
+        finalNodeIds.has(edge.source) && finalNodeIds.has(edge.target)
+    );
+
+    return { visibleNodes: finalNodes, visibleEdges: finalEdges };
 }
 
 /**
