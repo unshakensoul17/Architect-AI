@@ -7,7 +7,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     public resolveWebviewView(
         webviewView: vscode.WebviewView,
-        context: vscode.WebviewViewResolveContext,
+        _context: vscode.WebviewViewResolveContext,
         _token: vscode.CancellationToken,
     ) {
         this._view = webviewView;
@@ -25,22 +25,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     vscode.commands.executeCommand('codeIndexer.visualizeGraph');
                     break;
                 }
-                case 'refine-architecture': {
-                    vscode.commands.executeCommand('codeIndexer.refineArchitecture');
+                case 'update-index': {
+                    vscode.commands.executeCommand('codeIndexer.indexWorkspace');
+                    break;
+                }
+                case 'reset-index': {
+                    vscode.commands.executeCommand('codeIndexer.clearIndex');
+                    break;
+                }
+                case 'update-api-keys': {
+                    vscode.commands.executeCommand('codeIndexer.configureAI');
                     break;
                 }
             }
         });
     }
 
-    private _getHtmlForWebview(webview: vscode.Webview) {
-        const styleResetUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, 'resources', 'reset.css')
-        );
-        const styleVSCodeUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, 'resources', 'vscode.css')
-        );
-
+    private _getHtmlForWebview(_webview: vscode.Webview) {
+        // Use VS Code's native CSS variables for a consistent look
         return `<!DOCTYPE html>
 			<html lang="en">
 			<head>
@@ -48,54 +50,148 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
 				<title>Architect AI</title>
                 <style>
+                    :root {
+                        --container-padding: 16px;
+                    }
                     body {
-                        padding: 10px;
+                        padding: var(--container-padding);
                         font-family: var(--vscode-font-family);
                         color: var(--vscode-foreground);
+                        background-color: var(--vscode-sideBar-background);
+                        display: flex;
+                        flex-direction: column;
+                        gap: 16px;
                     }
-                    .button {
+                    
+                    .header {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 8px;
+                        margin-bottom: 8px;
+                    }
+
+                    h2 {
+                        font-size: 11px;
+                        text-transform: uppercase;
+                        letter-spacing: 0.5px;
+                        color: var(--vscode-descriptionForeground);
+                        margin: 0;
+                        font-weight: 600;
+                    }
+
+                    .card {
+                        background-color: var(--vscode-editor-background);
+                        border: 1px solid var(--vscode-widget-border);
+                        border-radius: 6px;
+                        padding: 12px;
+                        display: flex;
+                        flex-direction: column;
+                        gap: 12px;
+                    }
+
+                    .hero-button {
                         background-color: var(--vscode-button-background);
                         color: var(--vscode-button-foreground);
                         border: none;
-                        padding: 8px 12px;
+                        padding: 10px 14px;
                         text-align: center;
                         text-decoration: none;
-                        display: block;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
                         font-size: 13px;
-                        margin: 10px 0;
+                        font-weight: 500;
                         cursor: pointer;
+                        border-radius: 4px;
+                        transition: background-color 0.1s;
                         width: 100%;
-                        border-radius: 2px;
+                        box-sizing: border-box;
                     }
-                    .button:hover {
+                    
+                    .hero-button:hover {
                         background-color: var(--vscode-button-hoverBackground);
                     }
-                    h2 {
-                        font-size: 14px;
-                        margin-bottom: 10px;
-                        font-weight: 600;
+
+                    .secondary-button {
+                        background-color: var(--vscode-button-secondaryBackground);
+                        color: var(--vscode-button-secondaryForeground);
+                        border: none;
+                        padding: 8px 12px;
+                        text-align: left;
+                        text-decoration: none;
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                        font-size: 12px;
+                        cursor: pointer;
+                        border-radius: 4px;
+                        transition: background-color 0.1s;
+                        width: 100%;
+                        box-sizing: border-box;
                     }
-                    p {
-                        font-size: 13px;
+
+                    .secondary-button:hover {
+                        background-color: var(--vscode-button-secondaryHoverBackground);
+                    }
+
+                    .icon {
+                        width: 14px;
+                        height: 14px;
+                        fill: currentColor;
                         opacity: 0.8;
-                        margin-bottom: 15px;
+                    }
+
+                    .divider {
+                        height: 1px;
+                        background-color: var(--vscode-widget-border);
+                        margin: 4px 0;
+                        opacity: 0.5;
+                    }
+
+                    .status-text {
+                        font-size: 11px;
+                        color: var(--vscode-descriptionForeground);
+                        text-align: center;
+                        opacity: 0.8;
                     }
                 </style>
 			</head>
 			<body>
-                <h2>Architect AI</h2>
-                <p>Visualize and analyze your codebase architecture.</p>
-				                <button class="button" onclick="openGraph()">Open Architecture Graph</button>
-                <button class="button" onclick="refineArchitecture()" style="background-color: #6366f1;">✨ AI Semantic Renaming</button>
-                <p style="font-size: 11px; margin-top: 5px;">Uses Gemini to rename modules based on business logic.</p>
+                <div class="header">
+                    <h2>Architect AI</h2>
+                </div>
+
+                <div class="card">
+                    <button class="hero-button" onclick="sendMessage('open-graph')">
+                        <span style="margin-right: 8px;">📊</span> Open Architecture Graph
+                    </button>
+                    <div class="status-text">Visualize codebase structure & flows</div>
+                </div>
+
+                <div class="header" style="margin-top: 12px;">
+                    <h2>Workspace & AI</h2>
+                </div>
+
+                <div class="card" style="gap: 8px;">
+                    <button class="secondary-button" onclick="sendMessage('update-index')">
+                        <span style="font-size: 14px;">🔄</span> Update Workspace Index
+                    </button>
+                    
+                    <button class="secondary-button" onclick="sendMessage('update-api-keys')">
+                        <span style="font-size: 14px;">🔑</span> Update API Keys
+                    </button>
+
+                    <div class="divider"></div>
+
+                    <button class="secondary-button" onclick="sendMessage('reset-index')" style="color: var(--vscode-errorForeground);">
+                        <span style="font-size: 14px;">🗑️</span> Reset Workspace Index
+                    </button>
+                </div>
 
                 <script>
                     const vscode = acquireVsCodeApi();
-                    function openGraph() {
-                        vscode.postMessage({ type: 'open-graph' });
-                    }
-                    function refineArchitecture() {
-                        vscode.postMessage({ type: 'refine-architecture' });
+                    function sendMessage(type) {
+                        vscode.postMessage({ type: type });
                     }
                 </script>
 			</body>

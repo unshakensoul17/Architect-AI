@@ -202,7 +202,20 @@ export class GraphWebviewProvider {
 
     private async openFile(filePath: string, line: number) {
         try {
-            const uri = vscode.Uri.file(filePath);
+            let absolutePath = filePath;
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+
+            if (workspaceFolders && workspaceFolders.length > 0) {
+                const root = workspaceFolders[0].uri.fsPath;
+                // If it's not already an absolute path within the workspace
+                if (!filePath.startsWith(root)) {
+                    // Handle both "src/app..." and "/src/app..."
+                    const relativePath = filePath.startsWith('/') ? filePath.substring(1) : filePath;
+                    absolutePath = path.join(root, relativePath);
+                }
+            }
+
+            const uri = vscode.Uri.file(absolutePath);
             const document = await vscode.workspace.openTextDocument(uri);
             const editor = await vscode.window.showTextDocument(document, {
                 viewColumn: vscode.ViewColumn.Beside,

@@ -11,6 +11,7 @@
  * - Symbol: "FilePath:Name:Line"
  */
 
+import * as path from 'path';
 import { CodeIndexDatabase } from '../db/database';
 import { AIOrchestrator } from '../ai/orchestrator';
 import {
@@ -26,6 +27,16 @@ export class InspectorService {
         private db: CodeIndexDatabase,
         private orchestrator: AIOrchestrator
     ) { }
+
+    private resolvePath(p: string): string {
+        if (!this.db) return p;
+        const root = this.db.getWorkspaceRootHeuristic();
+        if (p.startsWith(root)) return p;
+
+        // Handle both "src/app..." and "/src/app..."
+        const relativePath = p.startsWith('/') ? p.substring(1) : p;
+        return path.join(root, relativePath);
+    }
 
     /**
      * Get overview data for a selected node
@@ -59,10 +70,7 @@ export class InspectorService {
                 }
             } else if (nodeType === 'file') {
                 // Remove potential domain prefix if present for lookup
-                let filePath = nodeId;
-                if (filePath.startsWith('domain:')) {
-                    filePath = filePath.substring(7);
-                }
+                let filePath = this.resolvePath(nodeId.startsWith('domain:') ? nodeId.substring(7) : nodeId);
 
                 data.name = filePath.split('/').pop() || filePath;
                 data.path = filePath;
@@ -105,7 +113,7 @@ export class InspectorService {
                 if (parts.length >= 3) {
                     const line = parseInt(parts[parts.length - 1], 10);
                     const symbolName = parts[parts.length - 2];
-                    const filePath = parts.slice(0, -2).join(':');
+                    const filePath = this.resolvePath(parts.slice(0, -2).join(':'));
 
                     data.name = symbolName;
                     data.path = `${filePath}:${line}`;
@@ -149,7 +157,7 @@ export class InspectorService {
                 if (parts.length >= 3) {
                     const line = parseInt(parts[parts.length - 1], 10);
                     const symbolName = parts[parts.length - 2];
-                    const filePath = parts.slice(0, -2).join(':');
+                    const filePath = this.resolvePath(parts.slice(0, -2).join(':'));
 
                     const symbols = this.db.getSymbolsByFile(filePath);
                     const symbol = symbols.find(s => s.name === symbolName && s.rangeStartLine === line);
@@ -173,10 +181,7 @@ export class InspectorService {
                     }
                 }
             } else if (nodeType === 'file') {
-                let filePath = nodeId;
-                if (filePath.startsWith('domain:')) {
-                    filePath = filePath.substring(7);
-                }
+                let filePath = this.resolvePath(nodeId.startsWith('domain:') ? nodeId.substring(7) : nodeId);
 
                 // Get all symbols in this file
                 const symbols = this.db.getSymbolsByFile(filePath);
@@ -245,7 +250,7 @@ export class InspectorService {
                 if (parts.length >= 3) {
                     const line = parseInt(parts[parts.length - 1], 10);
                     const symbolName = parts[parts.length - 2];
-                    const filePath = parts.slice(0, -2).join(':');
+                    const filePath = this.resolvePath(parts.slice(0, -2).join(':'));
 
                     const symbols = this.db.getSymbolsByFile(filePath);
                     const symbol = symbols.find(s => s.name === symbolName && s.rangeStartLine === line);
@@ -323,7 +328,7 @@ export class InspectorService {
         if (parts.length >= 3) {
             const line = parseInt(parts[parts.length - 1], 10);
             const symbolName = parts[parts.length - 2];
-            const filePath = parts.slice(0, -2).join(':');
+            const filePath = this.resolvePath(parts.slice(0, -2).join(':'));
 
             // Look up the actual symbol ID from the database
             const symbols = this.db.getSymbolsByFile(filePath);
@@ -398,7 +403,7 @@ export class InspectorService {
         if (parts.length >= 3) {
             const line = parseInt(parts[parts.length - 1], 10);
             const symbolName = parts[parts.length - 2];
-            const filePath = parts.slice(0, -2).join(':');
+            const filePath = this.resolvePath(parts.slice(0, -2).join(':'));
 
             displayName = symbolName;
             const symbols = this.db.getSymbolsByFile(filePath);

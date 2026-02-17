@@ -49,6 +49,8 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+    const [lockedNodeId, setLockedNodeId] = useState<string | null>(null); // For persistent highlighting
+    const lastRightClick = useRef<number>(0);
     const [allNodes, setAllNodes] = useState<Node[]>([]);
     const [allEdges, setAllEdges] = useState<Edge[]>([]);
     const [isLayouting, setIsLayouting] = useState(false);
@@ -113,7 +115,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     const [executionFlows, setExecutionFlows] = useState<ReturnType<typeof detectExecutionFlows>>([]);
 
     // BFS Tree Depth control (0: Domain, 1: File, 2: Symbol)
-    const [maxDepth, setMaxDepth] = useState(2);
+    const [maxDepth, setMaxDepth] = useState(1);
 
     // Build all nodes and edges from graph data (only when data changes)
     useEffect(() => {
@@ -648,19 +650,38 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         return () => clearTimeout(layoutTimer);
     }, [visibleNodes, visibleEdges, currentMode, setNodes, setEdges]);
 
+    // Handle Right Click (Context Menu) for locking/unlocking highlights
+    const handleNodeContextMenu = useCallback(
+        (event: React.MouseEvent, node: Node) => {
+            event.preventDefault(); // Prevent default browser context menu
+            const now = Date.now();
+
+            if (now - lastRightClick.current < 300) {
+                // Double Right Click detected -> Lock Highlight
+                setLockedNodeId(node.id);
+            } else {
+                // Single Right Click detected -> Unlock/Clear
+                setLockedNodeId(null);
+            }
+            lastRightClick.current = now;
+        },
+        []
+    );
+
     // Highlight nodes and edges on hover with rich aesthetics
     const { interactiveNodes, interactiveNodesDict } = useMemo(() => {
-        if (!hoveredNodeId) return { interactiveNodes: nodes, interactiveNodesDict: new Set(nodes.map(n => n.id)) };
+        const activeId = lockedNodeId || hoveredNodeId;
+        if (!activeId) return { interactiveNodes: nodes, interactiveNodesDict: new Set(nodes.map(n => n.id)) };
 
         // Identify connected nodes
-        const connectedIds = new Set<string>([hoveredNodeId]);
+        const connectedIds = new Set<string>([activeId]);
         edges.forEach(edge => {
-            if (edge.source === hoveredNodeId) connectedIds.add(edge.target);
-            if (edge.target === hoveredNodeId) connectedIds.add(edge.source);
+            if (edge.source === activeId) connectedIds.add(edge.target);
+            if (edge.target === activeId) connectedIds.add(edge.source);
         });
 
         const themedNodes = nodes.map(node => {
-            const isHovered = node.id === hoveredNodeId;
+            const isActive = node.id === activeId;
             const isConnected = connectedIds.has(node.id);
 
             return {
@@ -668,21 +689,22 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                 style: {
                     ...node.style,
                     opacity: isConnected ? 1 : 0.2,
-                    filter: isHovered ? 'drop-shadow(0 0 10px rgba(56, 189, 248, 0.5))' : 'none',
+                    filter: isActive ? 'drop-shadow(0 0 10px rgba(56, 189, 248, 0.5))' : 'none',
                     transition: 'opacity 0.2s ease, filter 0.2s ease',
                 },
             };
         });
 
         return { interactiveNodes: themedNodes, interactiveNodesDict: connectedIds };
-    }, [nodes, edges, hoveredNodeId]);
+    }, [nodes, edges, hoveredNodeId, lockedNodeId]);
 
     const interactiveEdges = useMemo(() => {
-        if (!hoveredNodeId) return edges;
+        const activeId = lockedNodeId || hoveredNodeId;
+        if (!activeId) return edges;
 
         return edges.map((edge) => {
-            const isOutgoing = edge.source === hoveredNodeId;
-            const isIncoming = edge.target === hoveredNodeId;
+            const isOutgoing = edge.source === activeId;
+            const isIncoming = edge.target === activeId;
             const isConnected = isOutgoing || isIncoming;
             const isStructural = edge.id.startsWith('struct-');
 
@@ -700,6 +722,8 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                         stroke: isStructural ? '#ffffff' : highlightColor,
                         strokeDasharray: isStructural ? '5,5' : '0',
                         filter: isStructural ? 'none' : `drop-shadow(0 0 8px ${highlightColor})`,
+                        transition: 'opacity 0.2s ease, stroke-width 0.2s ease',
+                        zIndex: 1000, // Bring to front
                     },
                     markerEnd: {
                         ...(edge.markerEnd as any),
@@ -707,18 +731,22 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                         width: 25,
                         height: 25,
                     },
-                    zIndex: 1000,
                 };
             }
+
             return {
                 ...edge,
                 style: {
                     ...edge.style,
-                    opacity: 0.05,
-                }
+                    opacity: 0.1,
+                    stroke: '#475569',
+                    strokeWidth: 1,
+                    transition: 'opacity 0.2s ease',
+                },
+                animated: false,
             };
         });
-    }, [edges, hoveredNodeId]);
+    }, [edges, hoveredNodeId, lockedNodeId]);
 
     // Fit view only once when nodes first load (prevents blinking)
     useEffect(() => {
@@ -902,6 +930,8 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     onNodeDoubleClick={handleNodeDoubleClick}
                     onNodeMouseEnter={handleNodeMouseEnter}
                     onNodeMouseLeave={handleNodeMouseLeave}
+                    onNodeContextMenu={handleNodeContextMenu}
+                    onPaneContextMenu={(e) => { e.preventDefault(); setLockedNodeId(null); }}
                     nodeTypes={nodeTypes}
                     minZoom={0.1}
                     maxZoom={2}

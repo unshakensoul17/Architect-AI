@@ -39,6 +39,16 @@ class IndexWorker {
         this.extractor = new SymbolExtractor();
     }
 
+    private resolvePath(p: string): string {
+        if (!this.db) return p;
+        const root = this.db.getWorkspaceRootHeuristic();
+        if (p.startsWith(root)) return p;
+
+        // Handle both "src/app..." and "/src/app..."
+        const relativePath = p.startsWith('/') ? p.substring(1) : p;
+        return path.join(root, relativePath);
+    }
+
     /**
      * Initialize worker resources
      */
@@ -897,8 +907,7 @@ class IndexWorker {
             if (parts.length >= 3) {
                 const line = parseInt(parts[parts.length - 1], 10);
                 const symbolName = parts[parts.length - 2];
-                const filePath = parts.slice(0, -2).join(':');
-
+                const filePath = this.resolvePath(parts.slice(0, -2).join(':'));
                 const symbols = this.db!.getSymbolsByFile(filePath);
                 const symbol = symbols.find(s => s.name === symbolName && s.rangeStartLine === line);
                 if (symbol) {
@@ -1095,7 +1104,7 @@ class IndexWorker {
                 if (parts.length >= 3) {
                     const line = parseInt(parts[parts.length - 1], 10);
                     const symbolName = parts[parts.length - 2];
-                    const filePath = parts.slice(0, -2).join(':');
+                    const filePath = this.resolvePath(parts.slice(0, -2).join(':'));
 
                     const symbol = this.db.getSymbolByLocation(filePath, symbolName, line);
                     if (symbol) {
