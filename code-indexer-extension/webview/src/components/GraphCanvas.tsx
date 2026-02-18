@@ -813,17 +813,18 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
 
     // Handle node hover
     const handleNodeMouseEnter = useCallback((event: React.MouseEvent, node: Node) => {
-        setHoveredNodeId(node.id);
-
-        // Tooltip Logic: Delay 400ms
+        // Clear any pending hover triggers (debouncing)
         if (hoverTimer.current) clearTimeout(hoverTimer.current);
 
         const clientX = event.clientX;
         const clientY = event.clientY;
         const nodeData = node.data as any;
 
+        // Add 150ms delay before triggering highlight/tooltip to prevent flickering during mouse movement
         hoverTimer.current = setTimeout(() => {
-            // Only show tooltip if we have relevant metrics
+            setHoveredNodeId(node.id);
+
+            // Tooltip Logic
             const content: any = {};
             let hasContent = false;
 
@@ -844,12 +845,13 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     type: node.type || 'node'
                 });
             }
-        }, 400);
+        }, 150);
     }, []);
 
     const handleNodeMouseLeave = useCallback(() => {
-        setHoveredNodeId(null);
+        // Immediate clear on leave for responsiveness
         if (hoverTimer.current) clearTimeout(hoverTimer.current);
+        setHoveredNodeId(null);
         setTooltipData(null);
     }, []);
 

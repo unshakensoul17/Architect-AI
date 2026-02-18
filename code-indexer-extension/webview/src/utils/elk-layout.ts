@@ -54,18 +54,17 @@ export async function applyElkLayout(
         if (node.type === 'domainNode') {
             if (isNestedFolder(node)) {
                 // Folder (Medium)
-                // Width reduced to fit content better (File=280 + Padding=~40 => 320 min)
-                width = 340;
-                height = 250;
+                // Increased width to prevent file name truncation
+                width = 380;
+                height = 150;
             } else {
                 // Root Domain (Largest)
-                // Width reduced
-                width = 480;
-                height = 380;
+                width = 420;
+                height = 200;
             }
         } else if (node.type === 'fileNode') {
-            // File (Small)
-            width = 280;
+            // File (Small) - Increased width for long names
+            width = 350;
             height = 120;
         }
 
