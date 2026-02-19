@@ -104,8 +104,36 @@ const DOMAIN_PATTERNS: DomainPattern[] = [
 /**
  * Domain Classifier
  * Analyzes file paths and imports to determine which domain a symbol belongs to
+ *
+ * Performance note: Use classifyByPathCached() when classifying all symbols in
+ * a file — it caches results so pattern matching runs only once per file path.
  */
 export class DomainClassifier {
+    /** Per-file cache: filePath → DomainClassification */
+    private fileCache: Map<string, DomainClassification> = new Map();
+
+    /**
+     * Classify a file-level domain once and cache it.
+     * All symbols in the same file share the same domain.
+     */
+    classifyByPathCached(filePath: string, imports: string[] = []): DomainClassification {
+        const cached = this.fileCache.get(filePath);
+        if (cached) return cached;
+        const result = this.classify(filePath, imports, undefined);
+        this.fileCache.set(filePath, result);
+        return result;
+    }
+
+    /** Invalidate the cache for a specific file (e.g. after re-index). */
+    invalidateCache(filePath: string): void {
+        this.fileCache.delete(filePath);
+    }
+
+    /** Clear the entire cache (e.g. on workspace close). */
+    clearCache(): void {
+        this.fileCache.clear();
+    }
+
     /**
      * Classify a file/symbol into a domain
      * @param filePath - Absolute path to the file

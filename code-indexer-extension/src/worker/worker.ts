@@ -15,6 +15,9 @@ import {
 import { AIOrchestrator, createOrchestrator } from '../ai';
 import { InspectorService } from './inspector-service';
 import { ImpactAnalyzer } from './impact-analyzer';
+import { StringRegistry } from './string-registry';
+import { CompositeIndex, resolvePendingCalls, resolvePendingImports, PendingCall, PendingImport } from './composite-index';
+import { NewSymbol } from '../db/schema';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -294,7 +297,8 @@ class IndexWorker {
     }
 
     /**
-     * Parse file and store symbols
+     * Parse a single file and store symbols + edges.
+     * Uses the binary pipeline (StringRegistry + CompositeIndex) for O(1) edge resolution.
      */
     private handleParse(
         id: string,
@@ -307,63 +311,124 @@ class IndexWorker {
             return;
         }
 
-        // Parse AST
+        // ── Extract: new binary pipeline API ──────────────────────────────
         const tree = this.parser.parse(content, language);
+        const registry = new StringRegistry();
+        const result = this.extractor.extract(tree, filePath, language, registry);
 
-        // Extract symbols, imports, and calls
-        const { symbols, imports, calls } = this.extractor.extract(tree, filePath, language);
-
-        // Delete existing symbols for this file (incremental update)
+        // ── Persist symbols ───────────────────────────────────────────────
         this.db.deleteSymbolsByFile(filePath);
+        const symbolIds = this.db.insertSymbols(result.symbols);
 
-        // Insert new symbols and get their IDs
-        const symbolIds = this.db.insertSymbols(symbols);
-
-        // Build local symbol map for this file
-        const localSymbolMap = this.extractor.getSymbolIdMap();
-
-        // Update global symbol map with database IDs
-        let i = 0;
-        for (const [key] of localSymbolMap) {
-            if (symbolIds[i]) {
-                this.globalSymbolMap.set(key, symbolIds[i]);
-            }
-            i++;
+        // Build CompositeIndex from inserted symbols so we can do O(1) edge resolution
+        const index = new CompositeIndex();
+        for (let i = 0; i < result.symbols.length; i++) {
+            const sym = result.symbols[i];
+            const dbId = symbolIds[i];
+            if (!dbId) continue;
+            index.register({
+                dbId,
+                nameId: registry.intern(sym.name),
+                pathId: registry.intern(sym.filePath),
+                typeId: registry.intern(sym.type),
+                line: sym.rangeStartLine,
+            });
+            // Keep globalSymbolMap in sync for any legacy code still reading it
+            const key = `${sym.filePath}:${sym.name}:${sym.rangeStartLine - 1}`;
+            this.globalSymbolMap.set(key, dbId);
         }
 
-        // Store imports and calls for later edge resolution
-        this.allImports.push(...imports);
-        this.allCalls.push(...calls);
+        // ── Fix up provisional caller IDs ─────────────────────────────────
+        for (const call of result.pendingCalls) {
+            if (call.callerDbId < 0) {
+                const idx = Math.abs(call.callerDbId) - 1;
+                const realId = symbolIds[idx];
+                if (realId !== undefined) { call.callerDbId = realId; }
+            }
+        }
 
-        // Create call edges within the same file
-        const callEdges = this.extractor.createCallEdges(calls, this.globalSymbolMap);
+        // ── Resolve relative import source paths ─────────────────────────
+        const snapshot = registry.exportSnapshot();
+        for (const imp of result.pendingImports) {
+            const moduleStr = registry.resolve(imp.sourcePathId);
+            if (moduleStr && !moduleStr.startsWith('/')) {
+                const normalized = moduleStr.replace(/^\.\//, '').replace(/\.(ts|tsx|js|jsx)$/, '');
+                // First check against the registry (already-indexed paths)
+                for (let i = 0; i < snapshot.length; i++) {
+                    const p = snapshot[i];
+                    if (p.startsWith('/') && p.replace(/\.(ts|tsx|js|jsx)$/, '').endsWith(normalized)) {
+                        imp.sourcePathId = i;
+                        break;
+                    }
+                }
+                // Also check globalSymbolMap keys for cross-file paths from other parse sessions
+                if (registry.resolve(imp.sourcePathId) === moduleStr) {
+                    for (const key of this.globalSymbolMap.keys()) {
+                        const keyPath = key.substring(0, key.indexOf(':'));
+                        if (keyPath.replace(/\.(ts|tsx|js|jsx)$/, '').endsWith(normalized)) {
+                            imp.sourcePathId = registry.intern(keyPath);
+                            // Rebuild index entry for this path if not already present
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
-        // Create import edges
-        const importEdges = this.extractor.createImportEdges(imports, this.globalSymbolMap);
+        // ── Build supplementary index from globalSymbolMap for cross-file resolution ──
+        // Register already-indexed symbols from other files so import/call edges can resolve
+        const registeredPaths = new Set<number>();
+        for (const sym of result.symbols) {
+            registeredPaths.add(registry.intern(sym.filePath));
+        }
+        // Walk globalSymbolMap and register any symbol NOT in the current file
+        for (const [key, dbId] of this.globalSymbolMap) {
+            const colonIdx = key.indexOf(':');
+            const keyPath = key.substring(0, colonIdx);
+            const rest = key.substring(colonIdx + 1);
+            const colonIdx2 = rest.indexOf(':');
+            const symName = rest.substring(0, colonIdx2);
+            const lineStr = rest.substring(colonIdx2 + 1);
 
-        // Combine all edges
-        const allEdges = [...callEdges, ...importEdges];
+            const pathId = registry.intern(keyPath);
+            if (registeredPaths.has(pathId)) continue; // already in index
 
-        this.db.insertEdges(allEdges);
+            const nameId = registry.intern(symName);
+            // Use a dummy typeId — type is not needed for resolution
+            index.register({ dbId, nameId, pathId, typeId: 0, line: parseInt(lineStr, 10) + 1 });
+        }
 
-        // Update file hash for incremental indexing
+        // ── O(1) Edge resolution ─────────────────────────────────────────
+        const callEdges = resolvePendingCalls(
+            result.pendingCalls.filter(c => c.callerDbId > 0),
+            index
+        );
+        const importEdges = resolvePendingImports(result.pendingImports, index);
+
+        this.db.insertEdgeBatch(callEdges, 'call');
+        this.db.insertEdgeBatch(importEdges, 'import');
+
+        // ── Metadata ─────────────────────────────────────────────────────
         const contentHash = CodeIndexDatabase.computeHash(content);
         this.db.setFileHash(filePath, contentHash);
-
-        // Update last index time
         this.db.setMeta('last_index_time', new Date().toISOString());
 
-        // Send completion response
         this.sendMessage({
             type: 'parse-complete',
             id,
-            symbolCount: symbols.length,
-            edgeCount: allEdges.length,
+            symbolCount: result.symbols.length,
+            edgeCount: callEdges.length + importEdges.length,
         });
     }
 
     /**
-     * Parse multiple files in batch for better cross-file edge resolution
+     * Parse multiple files in batch — Binary Pipeline Edition.
+     *
+     * IMPORTANT — provisional caller ID rebasing:
+     *   Each file's extract() returns callerDbId values as -(localIdx+1), where localIdx
+     *   is the symbol's position within THAT FILE's symbols[] array.  Before accumulating
+     *   them into allPendingCalls we offset them by the number of symbols already buffered
+     *   so that the global provisionalToDbId map can resolve them correctly.
      */
     private handleParseBatch(
         id: string,
@@ -374,58 +439,138 @@ class IndexWorker {
             return;
         }
 
+        const BATCH_SIZE = 500;
+        const isBulkBatch = files.length > 10;
+
+        if (isBulkBatch) {
+            this.db.preIndexCleanup();
+        }
+
         let totalSymbols = 0;
-        const allImports: ImportInfo[] = [];
-        const allCalls: CallInfo[] = [];
-        const fileSymbolMaps: Map<string, Map<string, number>> = new Map();
+        let totalEdges = 0;
 
-        // First pass: extract all symbols
+        const allPendingCalls: PendingCall[] = [];
+        const allPendingImports: PendingImport[] = [];
+        const registry = new StringRegistry();
+        const index = new CompositeIndex();
+
+        // symbolBuffer accumulates NewSymbol objects waiting to be flushed to the DB.
+        // symbolBufferStartIdx = number of symbols already flushed (and in provisionalToDbId).
+        let symbolBuffer: NewSymbol[] = [];
+        let symbolBufferStartIdx = 0;
+
+        // Maps global provisional index → real DB row ID.
+        const provisionalToDbId = new Map<number, number>();
+
+        const flushSymbolBuffer = () => {
+            if (symbolBuffer.length === 0) return;
+            const dbIds = this.db!.insertSymbols(symbolBuffer);
+            for (let i = 0; i < dbIds.length; i++) {
+                const sym = symbolBuffer[i];
+                const pathId = registry.intern(sym.filePath);
+                const nameId = registry.intern(sym.name);
+                const typeId = registry.intern(sym.type);
+                const dbId = dbIds[i];
+                // Key = global sequential index (symbolBufferStartIdx + i)
+                provisionalToDbId.set(symbolBufferStartIdx + i, dbId);
+                index.register({ dbId, nameId, pathId, typeId, line: sym.rangeStartLine });
+                // Keep globalSymbolMap in sync for cross-session single-file parses
+                const key = `${sym.filePath}:${sym.name}:${sym.rangeStartLine - 1}`;
+                this.globalSymbolMap.set(key, dbId);
+            }
+            symbolBufferStartIdx += symbolBuffer.length;
+            totalSymbols += symbolBuffer.length;
+            symbolBuffer = [];
+        };
+
+        // ── First pass: extract + buffer all symbols ───────────────────────
         for (const file of files) {
-            const tree = this.parser.parse(file.content, file.language);
-            const { symbols, imports, calls } = this.extractor.extract(tree, file.filePath, file.language);
-
-            // Delete existing symbols for this file
             this.db.deleteSymbolsByFile(file.filePath);
 
-            // Insert symbols and get IDs
-            const symbolIds = this.db.insertSymbols(symbols);
-            totalSymbols += symbols.length;
+            const tree = this.parser.parse(file.content, file.language);
+            const result = this.extractor.extract(tree, file.filePath, file.language, registry);
 
-            // Build symbol map for this file
-            const localSymbolMap = this.extractor.getSymbolIdMap();
-            let i = 0;
-            for (const [key] of localSymbolMap) {
-                if (symbolIds[i]) {
-                    this.globalSymbolMap.set(key, symbolIds[i]);
+            // *** THE CRITICAL OFFSET: how many symbols have been accumulated globally
+            //     BEFORE this file's symbols are added to the buffer.
+            //     provisionalToDbId keys = symbolBufferStartIdx + bufferPosition.
+            //     Local provisional index from extractor = 0..N-1 for this file.
+            //     Global key = fileOffset + localIdx. ***
+            const fileOffset = symbolBufferStartIdx + symbolBuffer.length;
+
+            // Rebase this file's provisional caller IDs from local to global
+            for (const call of result.pendingCalls) {
+                if (call.callerDbId < 0) {
+                    const localIdx = Math.abs(call.callerDbId) - 1;
+                    // Translate to global provisional index
+                    call.callerDbId = -(fileOffset + localIdx + 1);
                 }
-                i++;
+                allPendingCalls.push(call);
             }
-            fileSymbolMaps.set(file.filePath, localSymbolMap);
 
-            // Collect imports and calls
-            allImports.push(...imports);
-            allCalls.push(...calls);
+            allPendingImports.push(...result.pendingImports);
 
-            // Update file hash
+            symbolBuffer.push(...result.symbols);
+            if (symbolBuffer.length >= BATCH_SIZE) {
+                flushSymbolBuffer();
+            }
+
             const contentHash = CodeIndexDatabase.computeHash(file.content);
             this.db.setFileHash(file.filePath, contentHash);
         }
 
-        // Second pass: create edges with full symbol knowledge
-        const callEdges = this.extractor.createCallEdges(allCalls, this.globalSymbolMap);
-        const importEdges = this.extractor.createImportEdges(allImports, this.globalSymbolMap);
-        const allEdges = [...callEdges, ...importEdges];
+        // Flush any remaining symbols
+        flushSymbolBuffer();
 
-        this.db.insertEdges(allEdges);
+        // ── Resolve provisional caller IDs → real DB IDs ─────────────────
+        // (All IDs are now globally indexed; provisionalToDbId covers them all.)
+        for (const call of allPendingCalls) {
+            if (call.callerDbId < 0) {
+                const globalIdx = Math.abs(call.callerDbId) - 1;
+                const realId = provisionalToDbId.get(globalIdx);
+                if (realId !== undefined) {
+                    call.callerDbId = realId;
+                }
+            }
+        }
 
-        // Update last index time
+        // ── Resolve relative import source paths → absolute pathIds ────────
+        const registrySnapshot = registry.exportSnapshot();
+        for (const imp of allPendingImports) {
+            const moduleStr = registry.resolve(imp.sourcePathId);
+            if (moduleStr && !moduleStr.startsWith('/')) {
+                const normalized = moduleStr.replace(/^\.\//, '').replace(/\.(ts|tsx|js|jsx)$/, '');
+                for (let i = 0; i < registrySnapshot.length; i++) {
+                    const p = registrySnapshot[i];
+                    if (p.startsWith('/') && p.replace(/\.(ts|tsx|js|jsx)$/, '').endsWith(normalized)) {
+                        imp.sourcePathId = i;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ── O(1) edge resolution via CompositeIndex ────────────────────────
+        const callEdgeRecords = resolvePendingCalls(
+            allPendingCalls.filter(c => c.callerDbId > 0),
+            index
+        );
+        const importEdgeRecords = resolvePendingImports(allPendingImports, index);
+
+        this.db.insertEdgeBatch(callEdgeRecords, 'call');
+        this.db.insertEdgeBatch(importEdgeRecords, 'import');
+        totalEdges = callEdgeRecords.length + importEdgeRecords.length;
+
+        if (isBulkBatch) {
+            this.db.postIndexOptimization();
+        }
+
         this.db.setMeta('last_index_time', new Date().toISOString());
 
         this.sendMessage({
             type: 'parse-batch-complete',
             id,
             totalSymbols,
-            totalEdges: allEdges.length,
+            totalEdges,
             filesProcessed: files.length,
         });
     }

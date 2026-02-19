@@ -1516,6 +1516,100 @@ export class CodeIndexDatabase {
         }));
     }
 
+    // ========== Binary Pipeline: Bulk Ingestion Hooks ==========
+
+    /**
+     * Prepare the database for maximum-speed bulk ingestion.
+     *
+     * Drops all secondary indexes and disables journaling/sync so SQLite
+     * can stream raw pages. Must be called before bulk insertSymbols() calls
+     * and paired with postIndexOptimization() when ingestion is complete.
+     *
+     * WARNING: Do NOT call this during normal incremental indexing — only
+     * during full workspace reindex operations.
+     */
+    preIndexCleanup(): void {
+        console.log('DB: Entering bulk-ingest mode (indexes dropped, sync off)');
+        this.db.exec(`
+            -- Drop secondary indexes to speed up bulk writes
+            DROP INDEX IF EXISTS idx_symbols_name;
+            DROP INDEX IF EXISTS idx_symbols_file_path;
+            DROP INDEX IF EXISTS idx_symbols_type;
+            DROP INDEX IF EXISTS idx_symbols_domain;
+            DROP INDEX IF EXISTS idx_edges_source;
+            DROP INDEX IF EXISTS idx_edges_target;
+            DROP INDEX IF EXISTS idx_edges_type;
+            DROP INDEX IF EXISTS idx_files_path;
+            DROP INDEX IF EXISTS idx_debt_symbol;
+            DROP INDEX IF EXISTS idx_debt_severity;
+
+            -- Disable safety features for raw insert speed
+            PRAGMA foreign_keys = OFF;
+            PRAGMA synchronous = OFF;
+            PRAGMA journal_mode = MEMORY;
+            PRAGMA cache_size = -65536;  -- 64MB page cache
+            PRAGMA temp_store = MEMORY;
+        `);
+    }
+
+    /**
+     * Re-create all indexes and restore safety settings after bulk ingestion.
+     * Runs ANALYZE so the query planner has accurate statistics.
+     *
+     * Call this once after all bulk insertSymbols()/insertEdges() calls are done.
+     */
+    postIndexOptimization(): void {
+        console.log('DB: Rebuilding indexes and running ANALYZE...');
+        this.db.exec(`
+            -- Restore safety settings
+            PRAGMA foreign_keys = ON;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA journal_mode = WAL;
+
+            -- Recreate all secondary indexes
+            CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+            CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);
+            CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(type);
+            CREATE INDEX IF NOT EXISTS idx_symbols_domain ON symbols(domain);
+            CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
+            CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
+            CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type);
+            CREATE INDEX IF NOT EXISTS idx_files_path ON files(file_path);
+            CREATE INDEX IF NOT EXISTS idx_debt_symbol ON technical_debt(symbol_id);
+            CREATE INDEX IF NOT EXISTS idx_debt_severity ON technical_debt(severity);
+
+            -- Refresh query planner statistics
+            ANALYZE;
+        `);
+        console.log('DB: Post-index optimization complete.');
+    }
+
+    /**
+     * High-throughput edge batch insert.
+     * Wraps all edges in a single transaction with a pre-compiled statement.
+     * Skips edges where source or target is 0 (unresolved).
+     *
+     * @param edges Array of {sourceId, targetId} pairs.
+     * @param type  Edge type string ('call' | 'import').
+     */
+    insertEdgeBatch(edges: Array<{ sourceId: number; targetId: number }>, type: string): void {
+        if (edges.length === 0) return;
+
+        const stmt = this.db.prepare(
+            'INSERT OR IGNORE INTO edges (source_id, target_id, type) VALUES (?, ?, ?)'
+        );
+
+        const run = this.db.transaction((items: Array<{ sourceId: number; targetId: number }>) => {
+            for (const e of items) {
+                if (e.sourceId > 0 && e.targetId > 0 && e.sourceId !== e.targetId) {
+                    stmt.run(e.sourceId, e.targetId, type);
+                }
+            }
+        });
+
+        run(edges);
+    }
+
     /**
      * Close database connection
      */
