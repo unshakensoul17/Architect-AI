@@ -174,9 +174,7 @@ class IndexWorker {
                     this.handleAIClassifyIntent(request);
                     break;
 
-                case 'mcp-tool-call':
-                    this.handleMCPToolCall(request);
-                    break;
+
 
                 case 'get-context':
                     this.handleGetContext(request);
@@ -641,29 +639,7 @@ class IndexWorker {
         });
     }
 
-    /**
-     * Handle MCP Tool Call
-     */
-    private async handleMCPToolCall(request: any): Promise<void> {
-        if (!this.orchestrator) {
-            this.sendError(request.id, 'AI Orchestrator not initialized');
-            return;
-        }
 
-        const response = await this.orchestrator.executeMCPTool({
-            toolName: request.toolName,
-            arguments: request.arguments,
-        });
-
-        this.sendMessage({
-            type: 'mcp-tool-result',
-            id: request.id,
-            success: response.success,
-            toolName: response.toolName,
-            result: response.result,
-            error: response.error,
-        });
-    }
 
     /**
      * Handle Get Context
@@ -747,115 +723,24 @@ class IndexWorker {
 
     /**
      * Handle Refine Graph request (Architect Pass)
+     * MODIFIED: AI Architect Pass removed by user request.
+     * Immediately returns success without AI processing.
      */
     private async handleRefineGraph(id: string): Promise<void> {
-        if (!this.db || !this.orchestrator) {
+        if (!this.db) {
             this.sendError(id, 'Resource not initialized');
             return;
         }
 
         try {
-            console.log('Worker: Starting graph refinement (Architect Pass)...');
+            console.log('Worker: Graph refinement (Architect Pass) skipped (AI disabled).');
 
-            // 1. Get all files and generate skeletons
-            const allFiles = this.db.getAllFiles();
-            const workspaceRoot = this.db.getWorkspaceRootHeuristic();
-            const fullSkeleton: Record<string, any> = {};
-
-            console.log(`Worker: Building structural skeleton for ${allFiles.length} files (root: ${workspaceRoot})...`);
-
-            for (const file of allFiles) {
-                try {
-                    const content = fs.readFileSync(file.filePath, 'utf-8');
-                    const language = this.getLanguage(file.filePath);
-                    if (language) {
-                        const relPath = path.relative(workspaceRoot, file.filePath);
-                        fullSkeleton[relPath] = this.parser.generateStructuralSkeleton(content, language);
-                    }
-                } catch (e) {
-                    console.error(`Worker: Failed to read file for skeleton: ${file.filePath}`, e);
-                }
-            }
-
-            // 2. Optimized Domain Classification Pass (Macro)
-            const architectureSkeleton = await this.db.getArchitectureSkeleton();
-            await this.orchestrator.classifyDomainsWithSkeleton(architectureSkeleton);
-
-            // 3. Deep Symbol Refinement (Micro - in batches)
-            const refinedData = await this.orchestrator.refineSystemGraph(fullSkeleton);
-
-            // 3. Update Symbols in DB
-            const allSymbols = this.db.getAllSymbols();
-            const symbolsToUpdate: { id: number; metadata: any }[] = [];
-
-            console.log(`Worker: Matching refined data with ${allSymbols.length} symbols...`);
-
-            // Result maps results back to symbols
-            for (const symbol of allSymbols) {
-                const relPath = path.relative(workspaceRoot, symbol.filePath);
-                const key = `${relPath}:${symbol.name}:${symbol.rangeStartLine}`;
-                const metadata = refinedData.nodes[key];
-
-                if (metadata) {
-                    symbolsToUpdate.push({
-                        id: symbol.id,
-                        metadata: {
-                            purpose: metadata.purpose,
-                            impactDepth: metadata.impact_depth,
-                            searchTags: metadata.search_tags ? JSON.stringify(metadata.search_tags) : null,
-                            fragility: metadata.fragility,
-                            riskScore: metadata.risk_score ?? null,
-                            riskReason: metadata.risk_reason || null
-                        }
-                    });
-                }
-            }
-
-            // Perform batch update (need to implement updateSymbolMetadata in database.ts)
-            if (symbolsToUpdate.length > 0) {
-                this.db.updateSymbolsMetadata(symbolsToUpdate);
-            }
-
-            // 4. Update Edges (Implicit links)
-            if (refinedData.implicit_links && refinedData.implicit_links.length > 0) {
-                console.log(`Worker: Resolving ${refinedData.implicit_links.length} implicit links...`);
-                const implicitEdges: any[] = [];
-
-                // Helper to resolve string ID to database ID
-                // We'll use the symbols already in the DB to match.
-                // For performance, we can build a lookup map of all current symbols.
-                const idMap = new Map<string, number>();
-                allSymbols.forEach(s => {
-                    const relPath = path.relative(workspaceRoot, s.filePath);
-                    const key = `${relPath}:${s.name}:${s.rangeStartLine}`;
-                    idMap.set(key, s.id);
-                });
-
-                for (const link of refinedData.implicit_links) {
-                    const sourceId = idMap.get(link.sourceId);
-                    const targetId = idMap.get(link.targetId);
-
-                    if (sourceId && targetId) {
-                        implicitEdges.push({
-                            sourceId,
-                            targetId,
-                            type: 'implicit',
-                            reason: link.reason
-                        });
-                    }
-                }
-
-                if (implicitEdges.length > 0) {
-                    console.log(`Worker: Inserting ${implicitEdges.length} resolved implicit links.`);
-                    this.db.insertEdges(implicitEdges);
-                }
-            }
-
+            // We behave as if the pass completed but found nothing new to add (purely local)
             this.sendMessage({
                 type: 'refine-graph-complete',
                 id,
-                refinedNodeCount: symbolsToUpdate.length,
-                implicitLinkCount: refinedData.implicit_links?.length || 0
+                refinedNodeCount: 0,
+                implicitLinkCount: 0
             });
 
         } catch (error) {
@@ -948,121 +833,16 @@ class IndexWorker {
 
     /**
      * Handle incremental architect pass for changed files
-     * Only re-analyzes symbols in changed files + their 1st-degree neighbors
+     * MODIFIED: AI Incremental Pass removed.
      */
     private async handleRefineIncremental(id: string, changedFiles: string[]): Promise<void> {
-        if (!this.db || !this.orchestrator) {
-            this.sendError(id, 'Resource not initialized');
-            return;
-        }
-
-        try {
-            console.log(`Worker: Starting incremental refinement for ${changedFiles.length} files...`);
-
-            const partialSkeleton: Record<string, any> = {};
-            const targetSymbolIds = new Set<number>();
-            const workspaceRoot = this.db.getWorkspaceRootHeuristic();
-
-            for (const filePath of changedFiles) {
-                const symbolsInFile: Symbol[] = this.db.getSymbolsByFile(filePath);
-                for (const symbol of symbolsInFile) {
-                    targetSymbolIds.add(symbol.id);
-
-                    const relPath = path.relative(workspaceRoot, filePath);
-                    const nodeId = `${relPath}:${symbol.name}:${symbol.rangeStartLine}`;
-
-                    // Build skeleton entry
-                    partialSkeleton[nodeId] = {
-                        name: symbol.name,
-                        type: symbol.type,
-                        startLine: symbol.rangeStartLine,
-                        endLine: symbol.rangeEndLine,
-                        complexity: symbol.complexity,
-                        file: relPath
-                    };
-
-                    // Include 1st-degree neighbors in the skeleton for richer context
-                    const outgoing = this.db.getOutgoingEdges(symbol.id);
-                    const incoming = this.db.getIncomingEdges(symbol.id);
-
-                    for (const edge of [...outgoing, ...incoming]) {
-                        const neighborId = edge.sourceId === symbol.id ? edge.targetId : edge.sourceId;
-                        if (!targetSymbolIds.has(neighborId)) {
-                            const neighbor = this.db.getSymbolById(neighborId);
-                            if (neighbor) {
-                                const nRelPath = path.relative(workspaceRoot, neighbor.filePath);
-                                const nId = `${nRelPath}:${neighbor.name}:${neighbor.rangeStartLine}`;
-                                if (!partialSkeleton[nId]) {
-                                    partialSkeleton[nId] = {
-                                        name: neighbor.name,
-                                        type: neighbor.type,
-                                        startLine: neighbor.rangeStartLine,
-                                        endLine: neighbor.rangeEndLine,
-                                        complexity: neighbor.complexity,
-                                        file: nRelPath
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (Object.keys(partialSkeleton).length === 0) {
-                this.sendMessage({
-                    type: 'refine-incremental-complete',
-                    id,
-                    refinedNodeCount: 0,
-                    filesProcessed: changedFiles.length
-                });
-                return;
-            }
-
-            // Run AI refinement on partial skeleton
-            const refined = await this.orchestrator.refineSystemGraph(partialSkeleton);
-
-            // Update only the targeted symbols in the DB
-            const allSymbols = this.db.getAllSymbols();
-            const symbolsToUpdate: { id: number; metadata: any }[] = [];
-
-            for (const symbol of allSymbols) {
-                if (!targetSymbolIds.has(symbol.id)) continue;
-
-                const relPath = path.relative(workspaceRoot, symbol.filePath);
-                const nodeId = `${relPath}:${symbol.name}:${symbol.rangeStartLine}`;
-                const metadata = refined.nodes[nodeId];
-
-                if (metadata) {
-                    symbolsToUpdate.push({
-                        id: symbol.id,
-                        metadata: {
-                            purpose: metadata.purpose,
-                            impactDepth: metadata.impact_depth,
-                            searchTags: metadata.search_tags ? JSON.stringify(metadata.search_tags) : null,
-                            fragility: metadata.fragility,
-                            riskScore: metadata.risk_score ?? null,
-                            riskReason: metadata.risk_reason || null
-                        }
-                    });
-                }
-            }
-
-            if (symbolsToUpdate.length > 0) {
-                this.db.updateSymbolsMetadata(symbolsToUpdate);
-            }
-
-            console.log(`[Worker] Incremental refinement: ${symbolsToUpdate.length} nodes matched and updated from ${changedFiles.length} files`);
-
-            this.sendMessage({
-                type: 'refine-incremental-complete',
-                id,
-                refinedNodeCount: symbolsToUpdate.length,
-                filesProcessed: changedFiles.length
-            });
-        } catch (error) {
-            console.error(`[Worker] Incremental refinement failed:`, error);
-            this.sendError(id, `Incremental refinement failed: ${(error as Error).message}`);
-        }
+        // No-op for AI refinement
+        this.sendMessage({
+            type: 'refine-incremental-complete',
+            id,
+            refinedNodeCount: 0,
+            filesProcessed: changedFiles.length
+        });
     }
 
     /**

@@ -54,10 +54,21 @@ function App() {
         return () => monitor.stop();
     }, []);
 
+    // Timeout state
+    const [isTimeout, setIsTimeout] = useState(false);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
     // Message handler from extension
     useEffect(() => {
         const handleMessage = (event: MessageEvent<ExtensionMessage>) => {
             const message = event.data;
+
+            if (message.type === 'error') {
+                setErrorMessage(message.message);
+                setIsRefreshing(false);
+                setIsTimeout(false);
+                return;
+            }
 
             switch (message.type) {
                 case 'graph-data':
@@ -65,12 +76,15 @@ function App() {
                         setGraphData(message.data);
                         (window as any).graphData = message.data;
                         setIsRefreshing(false);
+                        setIsTimeout(false); // Reset timeout on successful data load
+                        setErrorMessage(null);
                     }
                     break;
 
                 case 'architecture-skeleton':
                     if (message.data) {
                         setArchitectureSkeleton(message.data);
+                        setErrorMessage(null);
                     }
                     break;
 
@@ -78,6 +92,7 @@ function App() {
                     if (message.data) {
                         setFunctionTrace(message.data);
                         setViewMode('trace');
+                        setErrorMessage(null);
                     }
                     break;
 
@@ -106,11 +121,14 @@ function App() {
 
     // Load full graph data when switching to complex views if not already loaded
     useEffect(() => {
-        if ((viewMode === 'flow') && !originalGraphData && !isRefreshing) {
+        // Prevent infinite loop by checking !isTimeout
+        if ((viewMode === 'flow') && !originalGraphData && !isRefreshing && !isTimeout && !errorMessage) {
             setIsRefreshing(true);
+            setIsTimeout(false);
+            setErrorMessage(null);
             vscode.postMessage({ type: 'request-graph' });
         }
-    }, [viewMode, originalGraphData, isRefreshing]);
+    }, [viewMode, originalGraphData, isRefreshing, isTimeout, errorMessage]);
 
     // Determine node type from node ID pattern
     const getNodeType = useCallback((nodeId: string): NodeType => {
@@ -161,8 +179,11 @@ function App() {
 
     const handleRefresh = useCallback(() => {
         setIsRefreshing(true);
-        const message: WebviewMessage = { type: 'request-graph' };
-        vscode.postMessage(message);
+        setIsTimeout(false);
+        setErrorMessage(null);
+        // Request both graph data and skeleton to be safe
+        vscode.postMessage({ type: 'request-graph' });
+        vscode.postMessage({ type: 'request-architecture-skeleton' });
     }, []);
 
     const handleCloseInspector = useCallback(() => {
@@ -186,7 +207,34 @@ function App() {
         setShowInspector((prev) => !prev);
     }, []);
 
-    const showLoading = isLoading || (originalGraphData === null && isRefreshing) || (originalGraphData === null && !displayedGraphData && !(viewMode === 'trace' && functionTrace) && !(viewMode === 'architecture' && architectureSkeleton));
+    // Explicitly check if the required data for the current view mode is missing
+    const isDataMissing = (() => {
+        if (viewMode === 'architecture') return !architectureSkeleton;
+        if (viewMode === 'trace') return !functionTrace;
+        // For flow/other modes, we need the main graph data
+        return !originalGraphData && !displayedGraphData;
+    })();
+
+    const showLoading = (isLoading || isRefreshing || isDataMissing) && !errorMessage && !isTimeout;
+
+    // Timeout logic
+    useEffect(() => {
+        let timer: NodeJS.Timeout;
+        if (showLoading) {
+            timer = setTimeout(() => {
+                console.log('Timeout triggered');
+                setIsTimeout(true);
+                setIsRefreshing(false); // Stop loading spinner
+            }, 8000); // Reduced to 8 seconds
+        }
+        return () => clearTimeout(timer);
+    }, [showLoading, isTimeout, errorMessage]);
+
+    // Graph Empty Check
+    const isGraphEmpty = !showLoading && !isTimeout && !errorMessage && displayedGraphData &&
+        displayedGraphData.symbols.length === 0 &&
+        displayedGraphData.files.length === 0 &&
+        displayedGraphData.domains.length === 0;
 
     return (
         <div className="w-full h-full flex flex-col">
@@ -283,14 +331,60 @@ function App() {
             {/* Main Content Area */}
             <div className="flex-1 flex overflow-hidden">
                 {/* Graph Canvas */}
-                <div className="flex-1 overflow-hidden">
-                    {showLoading ? (
+                <div className="flex-1 overflow-hidden relative">
+                    {errorMessage ? (
                         <div className="flex items-center justify-center w-full h-full">
                             <div className="text-center">
-                                <div className="text-lg font-semibold mb-2">Loading Graph...</div>
-                                <div className="text-sm opacity-70">
-                                    Calculating coupling metrics and layout
+                                <div className="text-lg font-semibold mb-2 text-red-500">Error Loading Graph</div>
+                                <div className="text-sm opacity-70 mb-4 text-red-400">
+                                    {errorMessage}
                                 </div>
+                                <button
+                                    onClick={handleRefresh}
+                                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                                >
+                                    Retry
+                                </button>
+                            </div>
+                        </div>
+                    ) : isTimeout ? (
+                        <div className="flex items-center justify-center w-full h-full">
+                            <div className="text-center">
+                                <div className="text-lg font-semibold mb-2 text-yellow-500">Request Timed Out</div>
+                                <div className="text-sm opacity-70 mb-4">
+                                    The graph data took too long to load.
+                                </div>
+                                <button
+                                    onClick={handleRefresh}
+                                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                                >
+                                    Retry
+                                </button>
+                            </div>
+                        </div>
+                    ) : showLoading ? (
+                        <div className="flex items-center justify-center w-full h-full">
+                            <div className="text-center">
+                                <div className="text-lg font-semibold mb-2">Initializing Visualization...</div>
+                                <div className="text-sm opacity-70">
+                                    Loading graph data from workspace...
+                                </div>
+                            </div>
+                        </div>
+                    ) : isGraphEmpty && viewMode !== 'trace' && viewMode !== 'architecture' ? (
+                        <div className="flex items-center justify-center w-full h-full">
+                            <div className="text-center max-w-md p-6 border border-dashed border-gray-500 rounded-lg">
+                                <div className="text-lg font-semibold mb-2">No nodes to display</div>
+                                <div className="text-sm opacity-70 mb-4">
+                                    The workspace appears to be empty or not yet indexed.
+                                    Please ensure you have indexed the workspace.
+                                </div>
+                                <button
+                                    onClick={() => vscode.postMessage({ type: 'index-workspace' })}
+                                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                                >
+                                    Index Workspace
+                                </button>
                             </div>
                         </div>
                     ) : (

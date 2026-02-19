@@ -6,13 +6,10 @@ import { IntentRouter, ClassifiedIntent } from './intent-router';
 import { GroqClient, createGroqClient } from './groq-client';
 import { VertexClient, createVertexClient } from './vertex-client';
 import { GeminiClient, createGeminiClient } from './gemini-client';
-import { MCPServer, MCPToolCall, MCPToolResponse } from './mcp/server';
-import { CodeIndexDatabase, ArchitectureSkeleton } from '../db/database';
+import { CodeIndexDatabase } from '../db/database';
 import { SymbolContext } from '../db/schema';
 import { DomainClassification, DomainType } from '../domain/classifier';
-import { DOMAIN_DESCRIPTIONS } from './mcp/domain-tools';
 import * as fs from 'fs';
-import { StructuralSkeleton } from '../worker/parser';
 
 /**
  * Refined metadata from Architect Pass
@@ -80,13 +77,13 @@ export class AIOrchestrator {
     private groqClient: GroqClient | null;
     private vertexClient: VertexClient | null;
     private geminiClient: GeminiClient | null;
-    private mcpServer: MCPServer;
+
     private db: CodeIndexDatabase;
 
     constructor(db: CodeIndexDatabase) {
         this.db = db;
         this.intentRouter = new IntentRouter();
-        this.mcpServer = new MCPServer(db);
+
 
         // Initialize AI clients (will be null if API keys not available)
         this.groqClient = createGroqClient();
@@ -412,16 +409,12 @@ Keep responses brief and focused - under 30 words when possible.`;
     /**
      * Execute MCP tool call
      */
-    async executeMCPTool(call: MCPToolCall): Promise<MCPToolResponse> {
-        return this.mcpServer.executeTool(call);
-    }
+
 
     /**
      * Get available MCP tools
      */
-    getMCPTools() {
-        return this.mcpServer.getAvailableTools();
-    }
+
 
     /**
      * Check if Groq client is available
@@ -441,99 +434,7 @@ Keep responses brief and focused - under 30 words when possible.`;
      * Classify symbol domain using AI
      * Uses Groq for fast classification or falls back to heuristics
      */
-    async classifySymbolDomain(
-        symbolName: string,
-        filePath: string,
-        imports: string[]
-    ): Promise<DomainClassification> {
-        // Check if AI clients are available
-        if (!this.groqClient && !this.vertexClient) {
-            console.warn('[Orchestrator] No AI clients available for domain classification');
-            // Return a low-confidence unknown classification to trigger fallback
-            return {
-                domain: DomainType.UNKNOWN,
-                confidence: 0,
-                reason: 'AI unavailable',
-            };
-        }
 
-        try {
-            // Build classification prompt
-            const domainsList = Object.entries(DOMAIN_DESCRIPTIONS)
-                .map(([domain, desc]) => `- ${domain}: ${desc}`)
-                .join('\n');
-
-            const prompt = `Analyze this code symbol and classify it into ONE of these architectural domains:
-
-${domainsList}
-
-Symbol Information:
-- Name: ${symbolName}
-- File Path: ${filePath}
-- Imports: ${imports.length > 0 ? imports.join(', ') : 'none'}
-
-Return ONLY a JSON object with this structure:
-{
-  "domain": "domain_name",
-  "confidence": 0.0-1.0,
-  "reasoning": "brief explanation"
-}
-
-Choose the most appropriate domain based on the symbol's purpose and context.`;
-
-            let responseText = '';
-
-            // Try Groq first (fast)
-            if (this.groqClient) {
-                try {
-                    const systemPrompt = 'You are a code architecture expert. Always respond with valid JSON only.';
-                    const response = await this.groqClient.complete(prompt, systemPrompt);
-                    responseText = response.content;
-                } catch (error) {
-                    console.warn('[Orchestrator] Groq classification failed:', (error as Error).message);
-                }
-            }
-
-            // Fallback to Vertex if Groq failed
-            if (!responseText && this.vertexClient) {
-                try {
-                    const systemPrompt = 'You are a code architecture expert. Always respond with valid JSON only.';
-                    const response = await this.vertexClient.complete(prompt, systemPrompt);
-                    responseText = response.content;
-                } catch (error) {
-                    console.warn('[Orchestrator] Vertex classification failed:', (error as Error).message);
-                }
-            }
-
-            // Parse AI response
-            if (responseText) {
-                // Extract JSON from response (in case there's extra text)
-                const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-                if (jsonMatch) {
-                    const parsed = JSON.parse(jsonMatch[0]);
-                    return {
-                        domain: parsed.domain as DomainType,
-                        confidence: parsed.confidence || 0.8,
-                        reason: parsed.reasoning || 'AI classified',
-                    };
-                }
-            }
-
-            // If AI failed, return low confidence to trigger heuristic fallback
-            return {
-                domain: DomainType.UNKNOWN,
-                confidence: 0,
-                reason: 'AI parsing failed',
-            };
-        } catch (error) {
-            console.error('[Orchestrator] Domain classification error:', error);
-            return {
-                domain: DomainType.UNKNOWN,
-                confidence: 0,
-                reason: `Error: ${(error as Error).message}`,
-            };
-        }
-    }
 
     /**
      * Get intent classification without executing query
@@ -566,186 +467,13 @@ Choose the most appropriate domain based on the symbol's purpose and context.`;
      * Optimized Domain Classification using the Architecture Skeleton (JSON 1)
      * Categorizes files into domains and generates high-level summaries.
      */
-    async classifyDomainsWithSkeleton(skeleton: ArchitectureSkeleton): Promise<void> {
-        const client = this.geminiClient || this.vertexClient || this.groqClient;
-        if (!client) return;
 
-        console.log(`[Orchestrator] Starting Domain Classification with ${skeleton.nodes.length} files`);
-
-        const domainsList = Object.entries(DOMAIN_DESCRIPTIONS)
-            .map(([domain, desc]) => `- ${domain}: ${desc}`)
-            .join('\n');
-
-        const systemPrompt = `You are a Principal Software Architect.
-Examine the following file-level Architecture Skeleton and categorize each file into a Domain.
-
-DOMAINS:
-${domainsList}
-
-RULES:
-1. Return a JSON object mapping 'filePath' to its classification.
-2. For each file, provide a 'domain' and a 'summary' (max 20 words).
-3. Use the file names and connection weights (dependencies) to infer the domain.
-
-RETURN FORMAT:
-{
-  "classifications": [
-    {
-      "filePath": "path/to/file.ts",
-      "domain": "DOMAIN_NAME",
-      "summary": "Brief technical summary"
-    }
-  ]
-}`;
-
-        const skeletonJson = JSON.stringify(skeleton);
-        const prompt = `Skeleton Data:\n${skeletonJson}`;
-
-        try {
-            const response = await client.complete(prompt, systemPrompt);
-            const content = response.content;
-
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const result = JSON.parse(jsonMatch[0]);
-                if (result.classifications) {
-                    console.log(`[Orchestrator] Domain classification complete: ${result.classifications.length} files processed`);
-
-                    // Update DB - We'll need to update symbols in these files
-                    // For each file, update all symbols within it to that domain
-                    for (const item of result.classifications) {
-                        const symbolsInFile = this.db.getSymbolsByFile(item.filePath);
-                        const updates = symbolsInFile.map(s => ({
-                            id: s.id,
-                            metadata: {
-                                domain: item.domain,
-                                purpose: item.summary
-                            }
-                        }));
-
-                        // We need to ensure database.ts can handle 'domain' update in metadata
-                        // Actually let's use a specific method or update the metadata structure
-                        this.db.updateSymbolsMetadata(updates);
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('[Orchestrator] Domain classification with skeleton failed:', error);
-        }
-    }
 
     /**
      * Architect Pass: Refine system graph using Gemini 1.5 Pro
      * Sends structural skeleton to AI to infer purpose, impact, and implicit links
      */
-    async refineSystemGraph(skeleton: Record<string, StructuralSkeleton>): Promise<RefinedGraph> {
-        if (!this.vertexClient && !this.geminiClient) {
-            throw new Error('Gemini or Vertex AI client not initialized (Project ID or API Key missing)');
-        }
 
-        const client = this.geminiClient || this.vertexClient!;
-
-        const methodStartTime = performance.now();
-        const skeletonJson = JSON.stringify(skeleton, null, 2);
-
-        // Check Cache (Critical for cost saving)
-        // We use a specific prefix for architect pass
-        const cacheKey = `architect_pass_v2:${CodeIndexDatabase.computeHash(skeletonJson)}`;
-        const cachedEntry = this.db.getAICache(cacheKey);
-
-        if (cachedEntry) {
-            try {
-                const result = JSON.parse(cachedEntry.response);
-                console.log(`[Orchestrator] Architect Pass cache hit for v2 (${Object.keys(result.nodes || {}).length} nodes)`);
-                return result as RefinedGraph;
-            } catch (e) {
-                console.error('[Orchestrator] Failed to parse cached architect result', e);
-            }
-        }
-
-        console.log(`[Orchestrator] Starting Architect Pass with ${client.getModel()} (${skeletonJson.length} bytes)`);
-
-        const systemPrompt = `You are a Principal Software Architect. 
-Analyze the provided Codebase Structural Skeleton. 
-
-MANDATORY RULES:
-1. FOCUS ONLY on Functions and Classes. 
-2. IGNORE variables, types, and interfaces unless they are central to the system flow.
-3. FOR EVERY NODE INCLUDED: You must provide a non-null 'purpose' (minimum 10 words), 'impact_depth', 'search_tags', 'fragility', 'risk_score', and 'risk_reason'.
-4. If a node's purpose is unclear from the name, infer it from the File Path and its 'Imports'.
-5. NEVER return a null field. If context is limited, use architectural inference based on the naming convention and folder path.
-
-6. USE THE EXACT NODE ID FORMAT: "filePath:symbolName:startLine".
-   Example: "src/auth/login.ts:validateUser:25"
-
-Return a JSON object:
-{
-  "nodes": {
-    "filePath:symbolName:startLine": {
-      "purpose": "A technical description of exactly what this class/function achieves.",
-      "impact_depth": 1-10,
-      "search_tags": ["business-logic-term"],
-      "fragility": "low|medium|high",
-      "risk_score": 0-100,
-      "risk_reason": "Specific architectural threat or failure impact."
-    }
-  }
-}
-`;
-
-        const entries = Object.entries(skeleton);
-        const BATCH_SIZE = 40;
-        const totalBatches = Math.ceil(entries.length / BATCH_SIZE);
-        const finalRefinedMetadata: Record<string, RefinedNodeData> = {};
-
-        console.log(`[Orchestrator] Starting Architect Pass for ${entries.length} nodes in ${totalBatches} batches`);
-
-        for (let i = 0; i < totalBatches; i++) {
-            const start = i * BATCH_SIZE;
-            const end = Math.min(start + BATCH_SIZE, entries.length);
-            const batch = Object.fromEntries(entries.slice(start, end));
-
-            console.log(`[Orchestrator] Processing batch ${i + 1}/${totalBatches} (${end - start} nodes)`);
-
-            const batchJson = JSON.stringify(batch, null, 2);
-            const batchPrompt = `Analyze this batch of the Codebase Structural Skeleton:\n\n\`\`\`json\n${batchJson}\n\`\`\``;
-
-            try {
-                const response = await client.complete(batchPrompt, systemPrompt);
-                const content = response.content;
-
-                // Extract JSON
-                const jsonMatch = content.match(/\{[\s\S]*\}/);
-                if (jsonMatch) {
-                    const batchResult = JSON.parse(jsonMatch[0]);
-                    if (batchResult.nodes) {
-                        Object.assign(finalRefinedMetadata, batchResult.nodes);
-                        console.log(`[Orchestrator] Batch ${i + 1} refined ${Object.keys(batchResult.nodes).length} nodes`);
-                    }
-                }
-
-                // Rate limiting protection
-                if (i < totalBatches - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                }
-            } catch (error) {
-                console.error(`[Orchestrator] Batch ${i + 1} failed:`, error);
-                // Continue with next batch instead of failing everything
-            }
-        }
-
-        const refinedGraph: RefinedGraph = {
-            nodes: finalRefinedMetadata,
-            implicit_links: [] // Implicit links are harder to batch accurately, focus on nodes for now
-        };
-
-        // Cache the full result
-        this.db.setAICache(cacheKey, JSON.stringify(refinedGraph));
-
-        console.log(`[Orchestrator] Architect Pass completed in ${Math.round(performance.now() - methodStartTime)}ms. Total nodes: ${Object.keys(finalRefinedMetadata).length}`);
-
-        return refinedGraph;
-    }
 
     /**
      * Reflex Pass: Get instant insight for a node using Groq (Llama 3.1)
@@ -779,55 +507,7 @@ Return a JSON object:
      * Semantic module labeling using Gemini
      * Generates human-friendly names for top-level folders based on contents and imports
      */
-    async semanticModuleLabeling(folders: { path: string, imports: string[] }[]): Promise<Record<string, string>> {
-        const client = this.geminiClient || this.vertexClient || this.groqClient;
-        if (!client || folders.length === 0) return {};
 
-        console.log(`[Orchestrator] Starting Semantic Module Labeling for ${folders.length} folders`);
-
-        const systemPrompt = `You are a Principal Software Architect.
-Your task is to generate ONE short, professional, business-domain name for each folder module provided.
-The name should reflect the logical responsibility of the folder.
-
-RULES:
-1. Return a JSON object mapping 'folderPath' to its new 'semanticName'.
-2. Use the folder path AND the list of primary imports/dependencies to infer the responsibility.
-3. The name should be 2-4 words maximum (e.g., "Search & Indexing Engine", "Authentication Service", "Core UI Components").
-4. If a folder is obviously a utility folder, call it "Utility Services" or similar.
-
-RETURN FORMAT:
-{
-  "labels": [
-    {
-      "folderPath": "src/lib/search",
-      "semanticName": "Search & Indexing Service"
-    }
-  ]
-}`;
-
-        const prompt = `Folders to label:\n${JSON.stringify(folders, null, 2)}`;
-
-        try {
-            const response = await client.complete(prompt, systemPrompt);
-            const content = response.content;
-
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const result = JSON.parse(jsonMatch[0]);
-                if (result.labels) {
-                    const mapping: Record<string, string> = {};
-                    result.labels.forEach((item: any) => {
-                        mapping[item.folderPath] = item.semanticName;
-                    });
-                    return mapping;
-                }
-            }
-        } catch (error) {
-            console.error('[Orchestrator] Semantic labeling failed:', error);
-        }
-
-        return {};
-    }
 }
 
 /**

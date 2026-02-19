@@ -62,6 +62,10 @@ export class GraphWebviewProvider {
                         await this.sendFunctionTrace(message.symbolId, message.nodeId);
                         break;
 
+                    case 'index-workspace':
+                        vscode.commands.executeCommand('codeIndexer.indexWorkspace');
+                        break;
+
                     case 'node-selected':
                         // Single click only selects the node in the webview (handled internally)
                         // We don't open the file on single click anymore
@@ -157,9 +161,12 @@ export class GraphWebviewProvider {
                 data: graphData,
             });
         } catch (error) {
-            vscode.window.showErrorMessage(
-                `Failed to load graph data: ${error instanceof Error ? error.message : String(error)}`
-            );
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Failed to load graph data: ${errorMessage}`);
+            this.panel.webview.postMessage({
+                type: 'error',
+                message: errorMessage
+            });
         }
     }
 
@@ -172,7 +179,12 @@ export class GraphWebviewProvider {
                 data: skeleton
             });
         } catch (error) {
-            vscode.window.showErrorMessage(`Failed to get architecture skeleton: ${error}`);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Failed to get architecture skeleton: ${errorMessage}`);
+            this.panel.webview.postMessage({
+                type: 'error',
+                message: errorMessage
+            });
         }
     }
 
@@ -337,7 +349,7 @@ export class GraphWebviewProvider {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:; connect-src ${webview.cspSource} data:;">
     <link href="${styleUri}" rel="stylesheet">
     <title>Code Graph Visualization</title>
     <style>

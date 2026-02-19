@@ -54,7 +54,8 @@ export type ExtensionMessage =
     | { type: 'architecture-skeleton'; data: ArchitectureSkeleton }
     | { type: 'function-trace'; data: FunctionTrace }
     | { type: 'theme-changed'; theme: 'light' | 'dark' }
-    | { type: 'filter-by-directory'; path: string };
+    | { type: 'filter-by-directory'; path: string }
+    | { type: 'error'; message: string };
 
 export type WebviewMessage =
     | { type: 'ready' }
