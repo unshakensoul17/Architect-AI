@@ -33,16 +33,16 @@ const ViewModeBar = memo(({
             description: 'Learn system structure',
         },
         {
+            id: 'codebase',
+            label: 'Codebase',
+            icon: '🔬',
+            description: 'Detailed symbol-level graph with connections',
+        },
+        {
             id: 'trace',
             label: 'Trace',
             icon: '🔍',
             description: 'Micro-view of function calls',
-        },
-        {
-            id: 'flow',
-            label: 'Flow',
-            icon: '🔄',
-            description: 'Trace execution paths',
         },
     ];
 
@@ -92,7 +92,7 @@ const ViewModeBar = memo(({
                     <span>{mode.label}</span>
                 </button>
             ))}
-            {(currentMode === 'flow' || currentMode === 'architecture') && (
+            {(currentMode === 'architecture' || currentMode === 'codebase') && (
                 <div
                     style={{
                         marginLeft: 'auto',
@@ -127,7 +127,7 @@ const ViewModeBar = memo(({
                             -
                         </button>
                         <span style={{ minWidth: '80px', textAlign: 'center', fontSize: '13px', fontWeight: '600' }}>
-                            {currentMode === 'architecture'
+                            {(currentMode === 'architecture' || currentMode === 'codebase')
                                 ? (maxDepth === 0 ? 'Domains' : maxDepth === 1 ? 'Structure' : 'Detailed')
                                 : (maxDepth === 0 ? 'Domains' : maxDepth === 1 ? 'Files' : 'Symbols')}
                         </span>
@@ -154,7 +154,7 @@ const ViewModeBar = memo(({
                 </div>
             )}
 
-            {currentMode === 'architecture' && (
+            {(currentMode === 'architecture' || currentMode === 'codebase') && (
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: '12px' }}>
                     {/* Domain Filter */}
                     <select

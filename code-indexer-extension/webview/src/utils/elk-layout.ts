@@ -66,6 +66,10 @@ export async function applyElkLayout(
             // File (Small) - Increased width for long names
             width = 350;
             height = 120;
+        } else if (node.type === 'symbolNode') {
+            // Symbol (Smallest) - compact for function/class nodes
+            width = 200;
+            height = 50;
         }
 
         const elkNode: ElkNode = {

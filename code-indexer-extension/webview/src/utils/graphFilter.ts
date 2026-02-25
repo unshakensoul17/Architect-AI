@@ -4,7 +4,7 @@ import type {
     FilterContext,
     NodeVisibilityState,
 } from '../types/viewMode';
-import { isNodeOnExecutionPath } from './flowDetector';
+
 import type { DomainNodeData, SymbolNodeData } from '../types';
 
 /**
@@ -66,10 +66,8 @@ export function applyViewMode(
     let result: FilteredGraph;
     switch (context.mode) {
         case 'architecture':
+        case 'codebase':
             result = filterArchitectureMode(allNodes, allEdges, context);
-            break;
-        case 'flow':
-            result = filterFlowMode(allNodes, allEdges, context);
             break;
         case 'trace':
             result = filterTraceMode(allNodes, allEdges, context);
@@ -195,11 +193,13 @@ function filterBySearch(
 function filterArchitectureMode(
     allNodes: Node[],
     allEdges: Edge[],
-    _context: FilterContext
+    context: FilterContext
 ): FilteredGraph {
     // Filter: Only domain and file nodes
     const visibleNodes = allNodes
-        .filter((node) => node.type === 'domainNode' || node.type === 'fileNode')
+        .filter((node) => context.mode === 'codebase'
+            ? true  // Codebase shows all node types including symbols
+            : (node.type === 'domainNode' || node.type === 'fileNode'))
         .map((node) => {
             const currentOpacity = (node.data as any)?.opacity;
             const currentDisableHeatmap = (node.data as any)?.disableHeatmap;
@@ -244,95 +244,7 @@ function filterArchitectureMode(
     return { visibleNodes, visibleEdges };
 }
 
-/**
- * Flow Mode: Highlight execution paths
- * Purpose: Understand runtime execution
- */
-function filterFlowMode(
-    allNodes: Node[],
-    allEdges: Edge[],
-    context: FilterContext
-): FilteredGraph {
-    const flows = context.executionFlows || [];
 
-    // Build path node set once
-    const pathNodeIds = new Set<string>();
-    flows.forEach((flow) => {
-        flow.path.forEach((nodeId) => pathNodeIds.add(nodeId));
-    });
-
-    // Only clone nodes that need changes
-    const visibleNodes = allNodes.map((node) => {
-        const isOnPath = pathNodeIds.has(node.id);
-        const currentOpacity = (node.data as any)?.opacity;
-        const currentHighlight = (node.data as any)?.isHighlighted;
-        const currentFlowNode = (node.data as any)?.isFlowNode;
-        const targetOpacity = isOnPath ? 1.0 : 0.15;
-
-        // Skip cloning if state hasn't changed (check all properties)
-        if (currentOpacity === targetOpacity &&
-            currentHighlight === isOnPath &&
-            currentFlowNode === isOnPath) {
-            return node;
-        }
-
-        return {
-            ...node,
-            data: {
-                ...node.data,
-                opacity: targetOpacity,
-                isHighlighted: isOnPath,
-                isFlowNode: isOnPath,
-            },
-            style: {
-                ...node.style,
-                opacity: isOnPath ? 1.0 : 0.15,
-            },
-        };
-    });
-
-    // Build edge path set once
-    const pathEdges = new Set<string>();
-    flows.forEach((flow) => {
-        for (let i = 0; i < flow.path.length - 1; i++) {
-            pathEdges.add(`${flow.path[i]}->${flow.path[i + 1]}`);
-        }
-    });
-
-    // Only clone edges that need changes
-    const nodeMap = new Map(allNodes.map(n => [n.id, n]));
-    const visibleEdges = allEdges.map((edge) => {
-        const isOnPath = pathEdges.has(`${edge.source}->${edge.target}`);
-        const targetNode = nodeMap.get(edge.target);
-        const targetDomain = (targetNode?.data as any)?.domain;
-        const baseStyle = DEFAULT_EDGE_STYLE(targetDomain);
-
-        const targetOpacity = isOnPath ? 1.0 : 0.15;
-        const targetStrokeWidth = isOnPath ? 2.5 : 1;
-
-        return {
-            ...edge,
-            ...baseStyle,
-            style: {
-                ...baseStyle.style,
-                strokeWidth: targetStrokeWidth,
-                opacity: targetOpacity,
-            },
-            markerEnd: {
-                ...baseStyle.markerEnd,
-                width: isOnPath ? 20 : 15,
-                height: isOnPath ? 20 : 15,
-            }
-        };
-    });
-
-    return { visibleNodes, visibleEdges };
-}
-
-/**
- * Risk Mode: Highlight dangerous code
- * Purpose: Find fragile code
- */
 
 
 /**
@@ -357,24 +269,12 @@ export function getNodeVisibilityState(
 ): NodeVisibilityState {
     switch (context.mode) {
         case 'architecture':
+        case 'codebase':
             return {
-                isVisible: node.type !== 'symbolNode',
+                isVisible: context.mode === 'codebase' ? true : node.type !== 'symbolNode',
                 opacity: 1.0,
                 isHighlighted: false,
             };
-
-        case 'flow': {
-            const isOnPath = context.executionFlows
-                ? isNodeOnExecutionPath(node.id, context.executionFlows)
-                : false;
-            return {
-                isVisible: true,
-                opacity: isOnPath ? 1.0 : 0.15,
-                isHighlighted: isOnPath,
-            };
-        }
-
-
 
         default:
             return {

@@ -28,7 +28,7 @@ import { applyElkLayout, clearLayoutCache } from '../utils/elk-layout';
 import { optimizeEdges } from '../utils/performance';
 import { applyViewMode as applyGraphFilter } from '../utils/graphFilter';
 import { getRelatedNodes, clearRelationshipCache } from '../utils/relationshipDetector';
-import { detectExecutionFlows } from '../utils/flowDetector';
+
 import { perfMonitor } from '../utils/performance-monitor';
 import { applyBFSLayout } from '../utils/bfs-layout';
 
@@ -70,7 +70,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     } = useViewMode(vscode, searchQuery);
 
     // Graph Store
-    const { collapsedNodes, toggleNodeCollapse, architectureSkeleton, functionTrace } = useGraphStore();
+    const { collapsedNodes, toggleNodeCollapse, architectureSkeleton, functionTrace, expandAll, collapseAll } = useGraphStore();
 
     // React Flow instance for focus engine
     const reactFlowInstance = useReactFlow();
@@ -111,11 +111,20 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         return Array.from(domains).sort();
     }, [architectureSkeleton]);
 
-    // Execution flows for flow mode
-    const [executionFlows, setExecutionFlows] = useState<ReturnType<typeof detectExecutionFlows>>([]);
+
 
     // BFS Tree Depth control (0: Domain, 1: File, 2: Symbol)
     const [maxDepth, setMaxDepth] = useState(1);
+
+    // Auto-expand domains when entering codebase mode so files are visible by default
+    useEffect(() => {
+        if (currentMode === 'codebase') {
+            expandAll();
+        } else if (currentMode === 'architecture') {
+            // Re-collapse when going back to architecture
+            collapseAll();
+        }
+    }, [currentMode, expandAll, collapseAll]);
 
     // Build all nodes and edges from graph data (only when data changes)
     useEffect(() => {
@@ -296,7 +305,190 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                 return;
             }
 
-            // Mode: Trace (Micro View)
+            // Mode: Codebase (Detailed Symbol-Level Graph)
+            // Like Architecture but drills down to individual symbols with real call/import edges.
+            if (currentMode === 'codebase' && graphData) {
+                const codebaseNodes: Node[] = [];
+                const codebaseEdges: Edge[] = [];
+
+                // Calculate coupling metrics for color coding
+                const metrics = calculateCouplingMetrics(graphData);
+
+                // Domain filtering
+                const filteredSymbols = selectedDomain === 'All'
+                    ? graphData.symbols
+                    : graphData.symbols.filter(s => (s.domain || 'unknown') === selectedDomain);
+
+                // Group by domain → file → symbols
+                const domainFileMap = new Map<string, Map<string, typeof graphData.symbols>>();
+                for (const sym of filteredSymbols) {
+                    const domain = sym.domain || 'unknown';
+                    if (!domainFileMap.has(domain)) domainFileMap.set(domain, new Map());
+                    const fMap = domainFileMap.get(domain)!;
+                    if (!fMap.has(sym.filePath)) fMap.set(sym.filePath, []);
+                    fMap.get(sym.filePath)!.push(sym);
+                }
+
+                // Sort symbols within each file
+                const sortSymbols = (syms: typeof graphData.symbols) => {
+                    return [...syms].sort((a, b) => {
+                        switch (sortBy) {
+                            case 'complexity': return (b.complexity || 0) - (a.complexity || 0);
+                            case 'fragility': return 0; // symbols don't have fragility directly
+                            case 'blastRadius': return 0;
+                            case 'name':
+                            default: return a.name.localeCompare(b.name);
+                        }
+                    });
+                };
+
+                // Build hierarchy
+                for (const [domain, fileMap] of domainFileMap) {
+                    const domainNodeId = `domain:${domain}`;
+                    const isDomainCollapsed = collapsedNodes.has(domainNodeId);
+
+                    // Create domain node
+                    const domainSymbols = Array.from(fileMap.values()).flat();
+                    const avgComplexity = domainSymbols.length > 0
+                        ? domainSymbols.reduce((s, sym) => s + (sym.complexity || 0), 0) / domainSymbols.length
+                        : 0;
+
+                    codebaseNodes.push({
+                        id: domainNodeId,
+                        type: 'domainNode',
+                        position: { x: 0, y: 0 },
+                        data: {
+                            domain,
+                            health: {
+                                domain,
+                                symbolCount: domainSymbols.length,
+                                avgComplexity,
+                                coupling: 0,
+                                healthScore: Math.max(0, 100 - avgComplexity * 5),
+                                status: avgComplexity > 15 ? 'critical' : avgComplexity > 8 ? 'warning' : 'healthy',
+                            },
+                            collapsed: isDomainCollapsed,
+                            onToggleCollapse: () => toggleNodeCollapse(domainNodeId),
+                        } as DomainNodeData,
+                    });
+
+                    if (isDomainCollapsed || maxDepth === 0) continue;
+
+                    for (const [filePath, fileSymbols] of fileMap) {
+                        const fileNodeId = `${domain}:${filePath}`;
+                        const isFileCollapsed = collapsedNodes.has(fileNodeId);
+
+                        const fileCouplings = fileSymbols
+                            .map(s => {
+                                const key = `${s.filePath}:${s.name}:${s.range.startLine}`;
+                                return metrics.get(key)?.normalizedScore || 0;
+                            })
+                            .filter(score => score > 0);
+                        const avgCoupling = fileCouplings.length > 0
+                            ? fileCouplings.reduce((a, b) => a + b, 0) / fileCouplings.length
+                            : 0;
+
+                        codebaseNodes.push({
+                            id: fileNodeId,
+                            type: 'fileNode',
+                            position: { x: 0, y: 0 },
+                            parentId: domainNodeId,
+                            extent: 'parent',
+                            data: {
+                                filePath,
+                                symbolCount: fileSymbols.length,
+                                avgCoupling,
+                                collapsed: isFileCollapsed,
+                                onToggleCollapse: () => toggleNodeCollapse(fileNodeId),
+                                label: filePath.split('/').pop() || filePath,
+                            } as FileNodeData,
+                        });
+
+                        // Skip symbols if file is collapsed or depth <= 1
+                        if (isFileCollapsed || maxDepth <= 1) continue;
+
+                        // Create symbol nodes
+                        const sorted = sortSymbols(fileSymbols);
+                        for (const sym of sorted) {
+                            const symKey = `${sym.filePath}:${sym.name}:${sym.range.startLine}`;
+                            const coupling = metrics.get(symKey) || {
+                                nodeId: symKey,
+                                inDegree: 0,
+                                outDegree: 0,
+                                cbo: 0,
+                                normalizedScore: 0,
+                                color: '#3b82f6',
+                            };
+
+                            codebaseNodes.push({
+                                id: symKey,
+                                type: 'symbolNode',
+                                position: { x: 0, y: 0 },
+                                parentId: fileNodeId,
+                                extent: 'parent',
+                                data: {
+                                    label: sym.name,
+                                    symbolType: sym.type,
+                                    complexity: sym.complexity,
+                                    coupling,
+                                    filePath: sym.filePath,
+                                    line: sym.range.startLine,
+                                } as SymbolNodeData,
+                            });
+                        }
+                    }
+                }
+
+                // Build edges — redirect collapsed nodes
+                const visibleNodeIds = new Set(codebaseNodes.map(n => n.id));
+                const nodeRedirection = new Map<string, string>();
+
+                graphData.symbols.forEach(sym => {
+                    const symbolId = `${sym.filePath}:${sym.name}:${sym.range.startLine}`;
+                    const domainId = `domain:${sym.domain || 'unknown'}`;
+                    const fileId = `${sym.domain || 'unknown'}:${sym.filePath}`;
+
+                    if (collapsedNodes.has(domainId) || maxDepth === 0) {
+                        nodeRedirection.set(symbolId, domainId);
+                    } else if (collapsedNodes.has(fileId) || maxDepth <= 1) {
+                        nodeRedirection.set(symbolId, fileId);
+                    }
+                });
+
+                const uniqueEdgeKeys = new Set<string>();
+                graphData.edges.forEach((edge, index) => {
+                    let source = edge.source;
+                    let target = edge.target;
+
+                    if (nodeRedirection.has(source)) source = nodeRedirection.get(source)!;
+                    if (nodeRedirection.has(target)) target = nodeRedirection.get(target)!;
+
+                    if (source !== target && visibleNodeIds.has(source) && visibleNodeIds.has(target)) {
+                        const key = `${source}-${target}-${edge.type}`;
+                        if (!uniqueEdgeKeys.has(key)) {
+                            uniqueEdgeKeys.add(key);
+                            codebaseEdges.push({
+                                id: `cb-edge-${index}`,
+                                source,
+                                target,
+                                type: 'smoothstep',
+                                animated: edge.type === 'call',
+                                style: {
+                                    stroke: edge.type === 'call' ? '#3b82f6' : edge.type === 'import' ? '#10b981' : '#6b7280',
+                                    strokeWidth: 1.5,
+                                },
+                            });
+                        }
+                    }
+                });
+
+                const optimized = optimizeEdges(codebaseEdges, 10000);
+                setAllNodes(codebaseNodes);
+                setAllEdges(optimized);
+                return;
+            }
+
+
             if (currentMode === 'trace' && functionTrace) {
                 const nodes: Node[] = functionTrace.nodes.map(n => ({
                     id: n.id,
@@ -333,7 +525,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                 return;
             }
 
-            // Default Mode: Full Graph (Flow, Risk, Impact, etc.)
+            // Default Mode: Full Graph
             if (!graphData) {
                 setAllNodes([]);
                 setAllEdges([]);
@@ -504,8 +696,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             setAllNodes([...domainNodes, ...fileNodes, ...symbolNodes]);
             setAllEdges(optimizedEdges);
 
-            const flows = detectExecutionFlows(graphData);
-            setExecutionFlows(flows);
+
         };
 
         buildNodes();
@@ -533,7 +724,6 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             focusedNodeId,
             relatedNodeIds,
             riskThresholds: DEFAULT_RISK_THRESHOLDS,
-            executionFlows,
             searchQuery,
         };
 
@@ -548,11 +738,11 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         });
         const finalNodes = Array.from(uniqueNodesMap.values());
 
-        // Additionally filter by depth in flow mode and prepare final sets
+        // Additionally filter by depth in codebase mode and prepare final sets
         let nodesToReturn = finalNodes;
         let edgesToReturn = result.visibleEdges;
 
-        if (currentMode === 'flow') {
+        if (currentMode === 'codebase') {
             const depthFilteredNodes = finalNodes.filter(node => {
                 if (maxDepth === 0) return node.type === 'domainNode';
                 if (maxDepth === 1) return node.type === 'domainNode' || node.type === 'fileNode';
@@ -568,8 +758,8 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             edgesToReturn = depthFilteredEdges;
         }
 
-        // DEDUPLICATION: Combine overlapping edges for cleaner Trace/Flow view
-        if (currentMode === 'flow' || currentMode === 'trace') {
+        // DEDUPLICATION: Combine overlapping edges for cleaner Trace/Codebase view
+        if (currentMode === 'trace' || currentMode === 'codebase') {
             const uniqueEdgeMap = new Map<string, Edge>();
             edgesToReturn.forEach(edge => {
                 const key = `${edge.source}->${edge.target}`;
@@ -589,7 +779,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         });
 
         return { visibleNodes: nodesToReturn, visibleEdges: edgesToReturn };
-    }, [allNodes, allEdges, currentMode, focusedNodeId, relatedNodeIdsKey, executionFlows, searchQuery, maxDepth]);
+    }, [allNodes, allEdges, currentMode, focusedNodeId, relatedNodeIdsKey, searchQuery, maxDepth]);
 
     // Handle search-driven focus (Only happens when searchQuery changes)
     useEffect(() => {
@@ -623,16 +813,15 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     let layoutedNodes: Node[];
                     let layoutedEdges: Edge[];
 
-                    if (currentMode === 'flow' || currentMode === 'trace') {
-                        // Use BFS layout for flow and trace mode
-                        // For trace, try to root at the first node
-                        const rootNodeId = currentMode === 'trace' ? visibleNodes[0]?.id : (focusedNodeId || undefined);
+                    if (currentMode === 'trace') {
+                        // Use BFS layout for trace mode
+                        const rootNodeId = visibleNodes[0]?.id;
                         const result = applyBFSLayout(
                             visibleNodes,
                             visibleEdges,
                             rootNodeId,
-                            currentMode === 'trace' ? 'RIGHT' : 'DOWN',
-                            currentMode === 'trace' // forceGrid for trace
+                            'RIGHT',
+                            true // forceGrid for trace
                         );
                         layoutedNodes = result.nodes;
                         layoutedEdges = result.edges;
@@ -971,7 +1160,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     if (nodes.length === 0 && !isLayouting) {
         // CASE 1: Filtered results are empty (Only if a specific domain is selected)
         if (selectedDomain !== 'All' &&
-            ((currentMode === 'architecture' && architectureSkeleton) || (currentMode === 'flow' && graphData))) {
+            ((currentMode === 'architecture' && architectureSkeleton) || (currentMode === 'codebase' && graphData))) {
             return (
                 <div className="flex items-center justify-center w-full h-full">
                     <div className="text-center">

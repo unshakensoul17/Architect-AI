@@ -1,9 +1,9 @@
 /**
  * View Mode System Types
- * Supports 4 analysis modes: Architecture, Flow, Risk, and Impact
+ * Supports 3 analysis modes: Architecture, Codebase, and Trace
  */
 
-export type ViewMode = 'architecture' | 'flow' | 'trace';
+export type ViewMode = 'architecture' | 'codebase' | 'trace';
 
 export interface ViewState {
     currentMode: ViewMode;
@@ -66,13 +66,7 @@ export const DEFAULT_RISK_THRESHOLDS: RiskThresholds = {
     health: 60,
 };
 
-// Execution flow for Flow Mode
-export interface ExecutionFlow {
-    entryPoint: string;    // Node ID
-    sinks: string[];       // Node IDs of endpoints
-    path: string[];        // All node IDs on the path
-    type: 'api' | 'main' | 'route' | 'event';
-}
+
 
 // Related nodes from relationship detection
 export interface RelatedNodes {
@@ -100,7 +94,6 @@ export interface FilterContext {
     focusedNodeId: string | null;
     relatedNodeIds: Set<string>;
     riskThresholds: RiskThresholds;
-    executionFlows?: ExecutionFlow[];
     searchQuery?: string;
 }
 
@@ -119,10 +112,10 @@ export const LAYOUT_CONFIG: Record<ViewMode, LayoutModeConfig> = {
         nodeSpacing: 50,
         layerSpacing: 80,
     },
-    flow: {
-        direction: 'RIGHT',
-        nodeSpacing: 60,
-        layerSpacing: 100,
+    codebase: {
+        direction: 'DOWN',
+        nodeSpacing: 40,
+        layerSpacing: 70,
     },
     trace: {
         direction: 'RIGHT',

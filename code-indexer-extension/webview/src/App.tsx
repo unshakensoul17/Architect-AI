@@ -122,7 +122,7 @@ function App() {
     // Load full graph data when switching to complex views if not already loaded
     useEffect(() => {
         // Prevent infinite loop by checking !isTimeout
-        if ((viewMode === 'flow') && !originalGraphData && !isRefreshing && !isTimeout && !errorMessage) {
+        if ((viewMode === 'codebase') && !originalGraphData && !isRefreshing && !isTimeout && !errorMessage) {
             setIsRefreshing(true);
             setIsTimeout(false);
             setErrorMessage(null);
@@ -211,7 +211,7 @@ function App() {
     const isDataMissing = (() => {
         if (viewMode === 'architecture') return !architectureSkeleton;
         if (viewMode === 'trace') return !functionTrace;
-        // For flow/other modes, we need the main graph data
+        // For flow/codebase/other modes, we need the main graph data
         return !originalGraphData && !displayedGraphData;
     })();
 
