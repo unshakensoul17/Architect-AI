@@ -1,11 +1,9 @@
-// Purpose: Database operations layer
+// Purpose: Database operations layer (sql.js WASM edition)
 // Provides type-safe CRUD operations for symbols, edges, files, and metadata
 // ALL database access happens in the worker thread only
 
-import Database from 'better-sqlite3';
-import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { eq, like, and } from 'drizzle-orm';
-import { symbols, edges, files, meta, aiCache, NewSymbol, NewEdge, Symbol, Edge, File, SymbolContext, AICacheEntry } from './schema';
+import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import { NewSymbol, NewEdge, Symbol, Edge, File, SymbolContext, AICacheEntry } from './schema';
 import { computeDomainHealth, type DomainHealth } from '../domain/health';
 import * as crypto from 'crypto';
 import * as path from 'path';
@@ -100,22 +98,78 @@ export interface TraceEdge {
     type: 'call' | 'import';
 }
 
-export class CodeIndexDatabase {
-    private db: Database.Database;
-    private drizzle: BetterSQLite3Database;
+// ========== Helper: run a SELECT and return rows as plain objects ==========
+function queryAll(db: SqlJsDatabase, sql: string, params: any[] = []): any[] {
+    const stmt = db.prepare(sql);
+    if (params.length > 0) stmt.bind(params);
+    const rows: any[] = [];
+    while (stmt.step()) {
+        rows.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return rows;
+}
 
-    constructor(dbPath: string) {
+function queryOne(db: SqlJsDatabase, sql: string, params: any[] = []): any | undefined {
+    const rows = queryAll(db, sql, params);
+    return rows.length > 0 ? rows[0] : undefined;
+}
+
+function runSql(db: SqlJsDatabase, sql: string, params: any[] = []): void {
+    db.run(sql, params);
+}
+
+export class CodeIndexDatabase {
+    private db: SqlJsDatabase;
+    private dbPath: string;
+    private orchestrator: any;
+
+    // Private constructor — use static `create()` instead
+    private constructor(db: SqlJsDatabase, dbPath: string) {
+        this.db = db;
+        this.dbPath = dbPath;
+        this.initializeSchema();
+    }
+
+    /**
+     * Async factory: load the WASM engine, open or create the DB file, return a ready instance.
+     */
+    static async create(dbPath: string): Promise<CodeIndexDatabase> {
         // Ensure database directory exists
         const dbDir = path.dirname(dbPath);
         if (!fs.existsSync(dbDir)) {
             fs.mkdirSync(dbDir, { recursive: true });
         }
 
-        this.db = new Database(dbPath);
-        this.db.pragma('journal_mode = WAL');
-        this.drizzle = drizzle(this.db);
+        // Locate the WASM binary next to the worker bundle
+        const wasmBinary = fs.readFileSync(
+            path.join(__dirname, 'sql-wasm.wasm')
+        );
 
-        this.initializeSchema();
+        const SQL = await initSqlJs({ wasmBinary });
+
+        let db: SqlJsDatabase;
+        if (fs.existsSync(dbPath)) {
+            const fileBuffer = fs.readFileSync(dbPath);
+            db = new SQL.Database(fileBuffer);
+        } else {
+            db = new SQL.Database();
+        }
+
+        // WAL is not available in sql.js (in-memory), but we can still set useful PRAGMAs
+        db.run('PRAGMA journal_mode = MEMORY');
+        db.run('PRAGMA foreign_keys = ON');
+
+        return new CodeIndexDatabase(db, dbPath);
+    }
+
+    /**
+     * Persist the in-memory database to disk (call after mutations)
+     */
+    saveToDisk(): void {
+        const data = this.db.export();
+        const buffer = Buffer.from(data);
+        fs.writeFileSync(this.dbPath, buffer);
     }
 
     /**
@@ -123,7 +177,7 @@ export class CodeIndexDatabase {
      * Creates tables if they don't exist
      */
     private initializeSchema(): void {
-        this.db.exec(`
+        this.db.run(`
       CREATE TABLE IF NOT EXISTS symbols (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -138,13 +192,17 @@ export class CodeIndexDatabase {
         purpose TEXT,
         impact_depth INTEGER,
         search_tags TEXT,
-        fragility TEXT
-      );
+        fragility TEXT,
+        risk_score INTEGER,
+        risk_reason TEXT
+      )
+    `);
 
-      CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
-      CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);
-      CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(type);
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(type)');
 
+        this.db.run(`
       CREATE TABLE IF NOT EXISTS edges (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         source_id INTEGER NOT NULL,
@@ -153,32 +211,40 @@ export class CodeIndexDatabase {
         reason TEXT,
         FOREIGN KEY (source_id) REFERENCES symbols(id) ON DELETE CASCADE,
         FOREIGN KEY (target_id) REFERENCES symbols(id) ON DELETE CASCADE
-      );
+      )
+    `);
 
-      CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
-      CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
-      CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type);
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type)');
 
+        this.db.run(`
       CREATE TABLE IF NOT EXISTS files (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         file_path TEXT NOT NULL UNIQUE,
         content_hash TEXT NOT NULL,
         last_indexed_at TEXT NOT NULL
-      );
+      )
+    `);
 
-      CREATE INDEX IF NOT EXISTS idx_files_path ON files(file_path);
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_files_path ON files(file_path)');
 
+        this.db.run(`
       CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
-      );
+      )
+    `);
 
+        this.db.run(`
       CREATE TABLE IF NOT EXISTS ai_cache (
         hash TEXT PRIMARY KEY,
         response TEXT NOT NULL,
         created_at TEXT NOT NULL
-      );
+      )
+    `);
 
+        this.db.run(`
       CREATE TABLE IF NOT EXISTS domain_metadata (
         domain TEXT PRIMARY KEY,
         health_score INTEGER NOT NULL,
@@ -186,20 +252,22 @@ export class CodeIndexDatabase {
         coupling INTEGER NOT NULL,
         symbol_count INTEGER NOT NULL,
         last_updated TEXT NOT NULL
-      );
+      )
+    `);
 
+        this.db.run(`
       CREATE TABLE IF NOT EXISTS domain_cache (
         symbol_id INTEGER PRIMARY KEY,
         domain TEXT NOT NULL,
         confidence INTEGER NOT NULL,
         cached_at TEXT NOT NULL
-      );
+      )
     `);
 
         // Migrations: Add new columns if they don't exist
         try {
-            const symbolsInfo = this.db.prepare("PRAGMA table_info(symbols)").all() as Array<{ name: string }>;
-            const existingSymbolCols = symbolsInfo.map(col => col.name);
+            const symbolsInfo = queryAll(this.db, "PRAGMA table_info(symbols)");
+            const existingSymbolCols = symbolsInfo.map((col: any) => col.name);
 
             const migrations = [
                 { name: 'domain', type: 'TEXT' },
@@ -214,22 +282,22 @@ export class CodeIndexDatabase {
             for (const migration of migrations) {
                 if (!existingSymbolCols.includes(migration.name)) {
                     console.log(`Migrating symbols table: Adding ${migration.name} column...`);
-                    this.db.exec(`ALTER TABLE symbols ADD COLUMN ${migration.name} ${migration.type}`);
+                    this.db.run(`ALTER TABLE symbols ADD COLUMN ${migration.name} ${migration.type}`);
                     if (migration.name === 'domain') {
-                        this.db.exec('CREATE INDEX IF NOT EXISTS idx_symbols_domain ON symbols(domain)');
+                        this.db.run('CREATE INDEX IF NOT EXISTS idx_symbols_domain ON symbols(domain)');
                     }
                 }
             }
 
             // Migration for edges table
-            const edgesInfo = this.db.prepare("PRAGMA table_info(edges)").all() as Array<{ name: string }>;
-            if (!edgesInfo.some(col => col.name === 'reason')) {
+            const edgesInfo = queryAll(this.db, "PRAGMA table_info(edges)");
+            if (!edgesInfo.some((col: any) => col.name === 'reason')) {
                 console.log('Migrating edges table: Adding reason column...');
-                this.db.exec('ALTER TABLE edges ADD COLUMN reason TEXT');
+                this.db.run('ALTER TABLE edges ADD COLUMN reason TEXT');
             }
 
             // Create technical_debt table if it doesn't exist
-            this.db.exec(`
+            this.db.run(`
                 CREATE TABLE IF NOT EXISTS technical_debt (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     symbol_id INTEGER NOT NULL,
@@ -238,10 +306,10 @@ export class CodeIndexDatabase {
                     description TEXT NOT NULL,
                     detected_at TEXT NOT NULL,
                     FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_debt_symbol ON technical_debt(symbol_id);
-                CREATE INDEX IF NOT EXISTS idx_debt_severity ON technical_debt(severity);
+                )
             `);
+            this.db.run('CREATE INDEX IF NOT EXISTS idx_debt_symbol ON technical_debt(symbol_id)');
+            this.db.run('CREATE INDEX IF NOT EXISTS idx_debt_severity ON technical_debt(severity)');
         } catch (error) {
             console.error('Migration error:', error);
         }
@@ -254,16 +322,15 @@ export class CodeIndexDatabase {
     insertSymbols(symbolsData: NewSymbol[]): number[] {
         const insertedIds: number[] = [];
 
-        const insertStmt = this.db.prepare(`
-      INSERT INTO symbols (name, type, file_path, range_start_line, range_start_column, 
-                          range_end_line, range_end_column, complexity, domain, 
-                          purpose, impact_depth, search_tags, fragility, risk_score, risk_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-        const transaction = this.db.transaction((items: NewSymbol[]) => {
-            for (const item of items) {
-                const info = insertStmt.run(
+        this.db.run('BEGIN TRANSACTION');
+        try {
+            for (const item of symbolsData) {
+                runSql(this.db, `
+                    INSERT INTO symbols (name, type, file_path, range_start_line, range_start_column,
+                                        range_end_line, range_end_column, complexity, domain,
+                                        purpose, impact_depth, search_tags, fragility, risk_score, risk_reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [
                     item.name,
                     item.type,
                     item.filePath,
@@ -279,12 +346,16 @@ export class CodeIndexDatabase {
                     item.fragility || null,
                     (item as any).riskScore || null,
                     (item as any).riskReason || null
-                );
-                insertedIds.push(Number(info.lastInsertRowid));
+                ]);
+                const lastId = queryOne(this.db, 'SELECT last_insert_rowid() as id');
+                insertedIds.push(lastId.id);
             }
-        });
+            this.db.run('COMMIT');
+        } catch (e) {
+            this.db.run('ROLLBACK');
+            throw e;
+        }
 
-        transaction(symbolsData);
         return insertedIds;
     }
 
@@ -292,57 +363,54 @@ export class CodeIndexDatabase {
      * Insert multiple edges in a transaction
      */
     insertEdges(edgesData: NewEdge[]): void {
-        const insertStmt = this.db.prepare(`
-      INSERT INTO edges (source_id, target_id, type, reason)
-      VALUES (?, ?, ?, ?)
-    `);
-
-        const transaction = this.db.transaction((items: NewEdge[]) => {
-            for (const item of items) {
+        this.db.run('BEGIN TRANSACTION');
+        try {
+            for (const item of edgesData) {
                 // Only insert if both source and target are valid
                 if (item.sourceId && item.targetId) {
-                    insertStmt.run(item.sourceId, item.targetId, item.type, item.reason || null);
+                    runSql(this.db, `
+                        INSERT INTO edges (source_id, target_id, type, reason)
+                        VALUES (?, ?, ?, ?)
+                    `, [item.sourceId, item.targetId, item.type, item.reason || null]);
                 }
             }
-        });
-
-        transaction(edgesData);
+            this.db.run('COMMIT');
+        } catch (e) {
+            this.db.run('ROLLBACK');
+            throw e;
+        }
     }
 
     /**
      * Query symbols by file path
      */
     getSymbolsByFile(filePath: string): Symbol[] {
-        return this.drizzle
-            .select()
-            .from(symbols)
-            .where(eq(symbols.filePath, filePath))
-            .all();
+        const rows = queryAll(this.db, 'SELECT * FROM symbols WHERE file_path = ?', [filePath]);
+        return rows.map(this.mapRowToSymbol);
     }
 
     /**
      * Query symbols by name
      */
     getSymbolsByName(name: string): Symbol[] {
-        return this.drizzle
-            .select()
-            .from(symbols)
-            .where(eq(symbols.name, name))
-            .all();
+        const rows = queryAll(this.db, 'SELECT * FROM symbols WHERE name = ?', [name]);
+        return rows.map(this.mapRowToSymbol);
     }
 
     /**
      * Get all symbols
      */
     getAllSymbols(): Symbol[] {
-        return this.drizzle.select().from(symbols).all();
+        const rows = queryAll(this.db, 'SELECT * FROM symbols');
+        return rows.map(this.mapRowToSymbol);
     }
 
     /**
      * Get all edges
      */
     getAllEdges(): Edge[] {
-        return this.drizzle.select().from(edges).all();
+        const rows = queryAll(this.db, 'SELECT * FROM edges');
+        return rows.map(this.mapRowToEdge);
     }
 
     /**
@@ -350,25 +418,8 @@ export class CodeIndexDatabase {
      * Used by InspectorService for domain health calculation
      */
     getSymbolsByDomain(domain: string): Symbol[] {
-        const rows = this.db.prepare(`
-            SELECT * FROM symbols WHERE domain = ?
-        `).all(domain) as any[];
-        return rows.map(r => ({
-            id: r.id,
-            name: r.name,
-            type: r.type,
-            filePath: r.file_path,
-            rangeStartLine: r.range_start_line,
-            rangeStartColumn: r.range_start_column,
-            rangeEndLine: r.range_end_line,
-            rangeEndColumn: r.range_end_column,
-            complexity: r.complexity,
-            domain: r.domain,
-            purpose: r.purpose,
-            impactDepth: r.impact_depth,
-            searchTags: r.search_tags,
-            fragility: r.fragility,
-        }));
+        const rows = queryAll(this.db, 'SELECT * FROM symbols WHERE domain = ?', [domain]);
+        return rows.map(this.mapRowToSymbol);
     }
 
     /**
@@ -376,22 +427,20 @@ export class CodeIndexDatabase {
      * Used to compute coupling ratio (cross-domain / total)
      */
     getDomainEdgeCounts(domain: string): { crossDomain: number; total: number } {
-        // All edges where source symbol is in this domain
-        const totalRow = this.db.prepare(`
+        const totalRow = queryOne(this.db, `
             SELECT COUNT(*) as cnt
             FROM edges e
             JOIN symbols s ON e.source_id = s.id
             WHERE s.domain = ?
-        `).get(domain) as { cnt: number };
+        `, [domain]);
 
-        // Edges where target symbol is in a DIFFERENT domain
-        const crossRow = this.db.prepare(`
+        const crossRow = queryOne(this.db, `
             SELECT COUNT(*) as cnt
             FROM edges e
             JOIN symbols src ON e.source_id = src.id
             JOIN symbols tgt ON e.target_id = tgt.id
             WHERE src.domain = ? AND (tgt.domain IS NULL OR tgt.domain != ?)
-        `).get(domain, domain) as { cnt: number };
+        `, [domain, domain]);
 
         return {
             total: totalRow?.cnt ?? 0,
@@ -401,27 +450,25 @@ export class CodeIndexDatabase {
 
     /**
      * Get import and export edge counts for a file
-     * importCount = edges pointing OUT of any symbol in this file (this file imports others)
-     * exportCount = edges pointing INTO symbols in this file (others import from this file)
      */
     getFileEdgeCounts(filePath: string): { importCount: number; exportCount: number } {
-        const importRow = this.db.prepare(`
+        const importRow = queryOne(this.db, `
             SELECT COUNT(*) as cnt
             FROM edges e
             JOIN symbols src ON e.source_id = src.id
             JOIN symbols tgt ON e.target_id = tgt.id
             WHERE src.file_path = ? AND tgt.file_path != ?
               AND e.type = 'import'
-        `).get(filePath, filePath) as { cnt: number };
+        `, [filePath, filePath]);
 
-        const exportRow = this.db.prepare(`
+        const exportRow = queryOne(this.db, `
             SELECT COUNT(*) as cnt
             FROM edges e
             JOIN symbols src ON e.source_id = src.id
             JOIN symbols tgt ON e.target_id = tgt.id
             WHERE tgt.file_path = ? AND src.file_path != ?
               AND e.type = 'import'
-        `).get(filePath, filePath) as { cnt: number };
+        `, [filePath, filePath]);
 
         return {
             importCount: importRow?.cnt ?? 0,
@@ -431,26 +478,20 @@ export class CodeIndexDatabase {
 
 
     getAllFiles(): File[] {
-        return this.drizzle.select().from(files).all();
+        const rows = queryAll(this.db, 'SELECT * FROM files');
+        return rows.map(this.mapRowToFile);
     }
 
     /**
      * Get all symbols with their outgoing edges
      */
     getSymbolsWithEdges(symbolId: number): { symbol: Symbol; edges: Edge[] } | null {
-        const symbol = this.drizzle
-            .select()
-            .from(symbols)
-            .where(eq(symbols.id, symbolId))
-            .get();
+        const symbolRow = queryOne(this.db, 'SELECT * FROM symbols WHERE id = ?', [symbolId]);
+        if (!symbolRow) return null;
 
-        if (!symbol) return null;
-
-        const symbolEdges = this.drizzle
-            .select()
-            .from(edges)
-            .where(eq(edges.sourceId, symbolId))
-            .all();
+        const symbol = this.mapRowToSymbol(symbolRow);
+        const edgeRows = queryAll(this.db, 'SELECT * FROM edges WHERE source_id = ?', [symbolId]);
+        const symbolEdges = edgeRows.map(this.mapRowToEdge);
 
         return { symbol, edges: symbolEdges };
     }
@@ -461,47 +502,27 @@ export class CodeIndexDatabase {
      * Get symbol by exact location
      */
     getSymbolByLocation(filePath: string, name: string, line: number): Symbol | null {
-        const symbol = this.drizzle
-            .select()
-            .from(symbols)
-            .where(
-                and(
-                    eq(symbols.filePath, filePath),
-                    eq(symbols.name, name),
-                    eq(symbols.rangeStartLine, line)
-                )
-            )
-            .get();
-
-        return symbol || null;
+        const row = queryOne(this.db, `
+            SELECT * FROM symbols
+            WHERE file_path = ? AND name = ? AND range_start_line = ?
+        `, [filePath, name, line]);
+        return row ? this.mapRowToSymbol(row) : null;
     }
 
     /**
      * Symbol context including code and neighbors for AI prompts
      */
     getSymbolWithContext(symbolId: number): SymbolContext | null {
-        // Get the target symbol
-        const symbol = this.drizzle
-            .select()
-            .from(symbols)
-            .where(eq(symbols.id, symbolId))
-            .get();
+        const symbolRow = queryOne(this.db, 'SELECT * FROM symbols WHERE id = ?', [symbolId]);
+        if (!symbolRow) return null;
 
-        if (!symbol) return null;
+        const symbol = this.mapRowToSymbol(symbolRow);
 
         // Get outgoing edges (this symbol depends on...)
-        const outgoingEdges = this.drizzle
-            .select()
-            .from(edges)
-            .where(eq(edges.sourceId, symbolId))
-            .all();
+        const outgoingEdges = queryAll(this.db, 'SELECT * FROM edges WHERE source_id = ?', [symbolId]).map(this.mapRowToEdge);
 
         // Get incoming edges (...depends on this symbol)
-        const incomingEdges = this.drizzle
-            .select()
-            .from(edges)
-            .where(eq(edges.targetId, symbolId))
-            .all();
+        const incomingEdges = queryAll(this.db, 'SELECT * FROM edges WHERE target_id = ?', [symbolId]).map(this.mapRowToEdge);
 
         // Collect neighbor IDs (1st-degree connections)
         const neighborIds = new Set<number>();
@@ -512,29 +533,10 @@ export class CodeIndexDatabase {
         const neighbors: Symbol[] = [];
         if (neighborIds.size > 0) {
             const neighborIdArray = Array.from(neighborIds);
-            const stmt = this.db.prepare(`
-                SELECT * FROM symbols WHERE id IN (${neighborIdArray.map(() => '?').join(',')})
-            `);
-            const results = stmt.all(...neighborIdArray) as any[];
+            const placeholders = neighborIdArray.map(() => '?').join(',');
+            const results = queryAll(this.db, `SELECT * FROM symbols WHERE id IN (${placeholders})`, neighborIdArray);
             for (const row of results) {
-                neighbors.push({
-                    id: row.id,
-                    name: row.name,
-                    type: row.type,
-                    filePath: row.file_path,
-                    rangeStartLine: row.range_start_line,
-                    rangeStartColumn: row.range_start_column,
-                    rangeEndLine: row.range_end_line,
-                    rangeEndColumn: row.range_end_column,
-                    complexity: row.complexity,
-                    domain: row.domain,
-                    purpose: row.purpose,
-                    impactDepth: row.impact_depth,
-                    searchTags: row.search_tags,
-                    fragility: row.fragility,
-                    riskScore: row.risk_score,
-                    riskReason: row.risk_reason,
-                });
+                neighbors.push(this.mapRowToSymbol(row));
             }
         }
 
@@ -550,22 +552,16 @@ export class CodeIndexDatabase {
      * Get symbol by name (for MCP tool queries)
      */
     getSymbolByName(name: string): Symbol | null {
-        return this.drizzle
-            .select()
-            .from(symbols)
-            .where(eq(symbols.name, name))
-            .get() || null;
+        const row = queryOne(this.db, 'SELECT * FROM symbols WHERE name = ?', [name]);
+        return row ? this.mapRowToSymbol(row) : null;
     }
 
     /**
      * Get symbol by ID (for MCP tool queries)
      */
     getSymbolById(symbolId: number): Symbol | null {
-        return this.drizzle
-            .select()
-            .from(symbols)
-            .where(eq(symbols.id, symbolId))
-            .get() || null;
+        const row = queryOne(this.db, 'SELECT * FROM symbols WHERE id = ?', [symbolId]);
+        return row ? this.mapRowToSymbol(row) : null;
     }
 
     /**
@@ -581,12 +577,7 @@ export class CodeIndexDatabase {
         } = { incoming: [], outgoing: [] };
 
         if (direction === 'outgoing' || direction === 'both') {
-            const outEdges = this.drizzle
-                .select()
-                .from(edges)
-                .where(eq(edges.sourceId, symbolId))
-                .all();
-
+            const outEdges = queryAll(this.db, 'SELECT * FROM edges WHERE source_id = ?', [symbolId]).map(this.mapRowToEdge);
             for (const edge of outEdges) {
                 const symbol = this.getSymbolById(edge.targetId);
                 if (symbol) {
@@ -596,12 +587,7 @@ export class CodeIndexDatabase {
         }
 
         if (direction === 'incoming' || direction === 'both') {
-            const inEdges = this.drizzle
-                .select()
-                .from(edges)
-                .where(eq(edges.targetId, symbolId))
-                .all();
-
+            const inEdges = queryAll(this.db, 'SELECT * FROM edges WHERE target_id = ?', [symbolId]).map(this.mapRowToEdge);
             for (const edge of inEdges) {
                 const symbol = this.getSymbolById(edge.sourceId);
                 if (symbol) {
@@ -618,37 +604,31 @@ export class CodeIndexDatabase {
      * Edges are automatically deleted due to CASCADE
      */
     deleteSymbolsByFile(filePath: string): void {
-        this.db.prepare('DELETE FROM symbols WHERE file_path = ?').run(filePath);
+        runSql(this.db, 'DELETE FROM symbols WHERE file_path = ?', [filePath]);
     }
 
     /**
      * Clear entire index
      */
     clearIndex(): void {
-        this.db.exec(`
-      DELETE FROM edges;
-      DELETE FROM symbols;
-      DELETE FROM files;
-      DELETE FROM meta;
-    `);
+        this.db.run('DELETE FROM edges');
+        this.db.run('DELETE FROM symbols');
+        this.db.run('DELETE FROM files');
+        this.db.run('DELETE FROM meta');
     }
 
     /**
      * Set metadata value
      */
     setMeta(key: string, value: string): void {
-        this.db
-            .prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
-            .run(key, value);
+        runSql(this.db, 'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, value]);
     }
 
     /**
      * Get metadata value
      */
     getMeta(key: string): string | null {
-        const result = this.db
-            .prepare('SELECT value FROM meta WHERE key = ?')
-            .get(key) as { value: string } | undefined;
+        const result = queryOne(this.db, 'SELECT value FROM meta WHERE key = ?', [key]);
         return result?.value ?? null;
     }
 
@@ -658,9 +638,7 @@ export class CodeIndexDatabase {
      * Get file hash from database
      */
     getFileHash(filePath: string): string | null {
-        const result = this.db
-            .prepare('SELECT content_hash FROM files WHERE file_path = ?')
-            .get(filePath) as { content_hash: string } | undefined;
+        const result = queryOne(this.db, 'SELECT content_hash FROM files WHERE file_path = ?', [filePath]);
         return result?.content_hash ?? null;
     }
 
@@ -669,12 +647,10 @@ export class CodeIndexDatabase {
      */
     setFileHash(filePath: string, contentHash: string): void {
         const now = new Date().toISOString();
-        this.db
-            .prepare(`
-        INSERT OR REPLACE INTO files (file_path, content_hash, last_indexed_at)
-        VALUES (?, ?, ?)
-      `)
-            .run(filePath, contentHash, now);
+        runSql(this.db, `
+            INSERT OR REPLACE INTO files (file_path, content_hash, last_indexed_at)
+            VALUES (?, ?, ?)
+        `, [filePath, contentHash, now]);
     }
 
     /**
@@ -702,11 +678,13 @@ export class CodeIndexDatabase {
      * Get cached AI response
      */
     getAICache(hash: string): AICacheEntry | null {
-        return this.drizzle
-            .select()
-            .from(aiCache)
-            .where(eq(aiCache.hash, hash))
-            .get() || null;
+        const row = queryOne(this.db, 'SELECT * FROM ai_cache WHERE hash = ?', [hash]);
+        if (!row) return null;
+        return {
+            hash: row.hash,
+            response: row.response,
+            createdAt: row.created_at,
+        };
     }
 
     /**
@@ -714,9 +692,8 @@ export class CodeIndexDatabase {
      */
     setAICache(hash: string, response: string): void {
         const now = new Date().toISOString();
-        this.db
-            .prepare('INSERT OR REPLACE INTO ai_cache (hash, response, created_at) VALUES (?, ?, ?)')
-            .run(hash, response, now);
+        runSql(this.db, 'INSERT OR REPLACE INTO ai_cache (hash, response, created_at) VALUES (?, ?, ?)',
+            [hash, response, now]);
     }
 
     // ========== Graph Export ==========
@@ -839,17 +816,9 @@ export class CodeIndexDatabase {
      * Get statistics about the index
      */
     getStats(): { symbolCount: number; edgeCount: number; fileCount: number } {
-        const symbolCount = this.db
-            .prepare('SELECT COUNT(*) as count FROM symbols')
-            .get() as { count: number };
-
-        const edgeCount = this.db
-            .prepare('SELECT COUNT(*) as count FROM edges')
-            .get() as { count: number };
-
-        const fileCount = this.db
-            .prepare('SELECT COUNT(*) as count FROM files')
-            .get() as { count: number };
+        const symbolCount = queryOne(this.db, 'SELECT COUNT(*) as count FROM symbols');
+        const edgeCount = queryOne(this.db, 'SELECT COUNT(*) as count FROM edges');
+        const fileCount = queryOne(this.db, 'SELECT COUNT(*) as count FROM files');
 
         return {
             symbolCount: symbolCount.count,
@@ -860,12 +829,11 @@ export class CodeIndexDatabase {
 
     // ========== Domain Operations ==========
 
-
     /**
      * Get domain statistics
      */
     getDomainStats(): { domain: string; symbolCount: number; avgComplexity: number }[] {
-        const results = this.db.prepare(`
+        const results = queryAll(this.db, `
             SELECT 
                 domain,
                 COUNT(*) as symbol_count,
@@ -874,7 +842,7 @@ export class CodeIndexDatabase {
             WHERE domain IS NOT NULL
             GROUP BY domain
             ORDER BY symbol_count DESC
-        `).all() as any[];
+        `);
 
         return results.map(r => ({
             domain: r.domain,
@@ -894,11 +862,11 @@ export class CodeIndexDatabase {
         symbolCount: number
     ): void {
         const now = new Date().toISOString();
-        this.db.prepare(`
+        runSql(this.db, `
             INSERT OR REPLACE INTO domain_metadata 
             (domain, health_score, complexity, coupling, symbol_count, last_updated)
             VALUES (?, ?, ?, ?, ?, ?)
-        `).run(domain, healthScore, complexity, coupling, symbolCount, now);
+        `, [domain, healthScore, complexity, coupling, symbolCount, now]);
     }
 
     /**
@@ -911,10 +879,7 @@ export class CodeIndexDatabase {
         symbolCount: number;
         lastUpdated: string;
     } | null {
-        const result = this.db.prepare(`
-            SELECT * FROM domain_metadata WHERE domain = ?
-        `).get(domain) as any;
-
+        const result = queryOne(this.db, 'SELECT * FROM domain_metadata WHERE domain = ?', [domain]);
         if (!result) return null;
 
         return {
@@ -937,9 +902,7 @@ export class CodeIndexDatabase {
         symbolCount: number;
         lastUpdated: string;
     }[] {
-        const results = this.db.prepare(`
-            SELECT * FROM domain_metadata ORDER BY health_score DESC
-        `).all() as any[];
+        const results = queryAll(this.db, 'SELECT * FROM domain_metadata ORDER BY health_score DESC');
 
         return results.map(r => ({
             domain: r.domain,
@@ -955,10 +918,10 @@ export class CodeIndexDatabase {
      */
     setDomainCache(symbolId: number, domain: string, confidence: number): void {
         const now = new Date().toISOString();
-        this.db.prepare(`
+        runSql(this.db, `
             INSERT OR REPLACE INTO domain_cache (symbol_id, domain, confidence, cached_at)
             VALUES (?, ?, ?, ?)
-        `).run(symbolId, domain, confidence, now);
+        `, [symbolId, domain, confidence, now]);
     }
 
     /**
@@ -968,10 +931,10 @@ export class CodeIndexDatabase {
         const symbol = this.getSymbolById(symbolId);
         if (!symbol) return 0;
 
-        const outEdges = this.db.prepare('SELECT COUNT(*) as count FROM edges WHERE source_id = ?').get(symbolId) as { count: number };
+        const outEdges = queryOne(this.db, 'SELECT COUNT(*) as count FROM edges WHERE source_id = ?', [symbolId]);
         const coupling = outEdges.count || 0;
 
-        return symbol.complexity * (coupling + 1); // +1 to ensure isolated complex nodes have a baseline fragility
+        return symbol.complexity * (coupling + 1);
     }
 
     /**
@@ -987,14 +950,14 @@ export class CodeIndexDatabase {
             visited.add(id);
 
             if (depth < maxDepth) {
-                const callers = this.db.prepare('SELECT source_id FROM edges WHERE target_id = ?').all(id) as { source_id: number }[];
+                const callers = queryAll(this.db, 'SELECT source_id FROM edges WHERE target_id = ?', [id]);
                 for (const caller of callers) {
                     queue.push({ id: caller.source_id, depth: depth + 1 });
                 }
             }
         }
 
-        return visited.size - 1; // Don't count the starting symbol itself
+        return visited.size - 1;
     }
 
     // ========== Architecture Skeleton (Macro View) ==========
@@ -1006,10 +969,9 @@ export class CodeIndexDatabase {
         if (cached) {
             try {
                 skeleton = JSON.parse(cached);
-                // If cache is empty but we likely have data, force regeneration
                 if (skeleton && skeleton.nodes.length === 0) {
-                    const count = (this.db.prepare('SELECT COUNT(*) as count FROM symbols').get() as any).count;
-                    if (count > 0) skeleton = null;
+                    const count = queryOne(this.db, 'SELECT COUNT(*) as count FROM symbols');
+                    if (count.count > 0) skeleton = null;
                 }
             } catch (e) {
                 console.error('Failed to parse cached skeleton', e);
@@ -1033,7 +995,6 @@ export class CodeIndexDatabase {
     private async refineArchitectureLabelsWithAI(skeleton: ArchitectureSkeleton): Promise<ArchitectureSkeleton> {
         if (!this.orchestrator) return skeleton;
 
-        // Collect folders that need labeling (typically depth 1 or 2)
         const foldersToLabel: { path: string, imports: string[] }[] = [];
 
         const traverse = (nodes: SkeletonNodeData[]) => {
@@ -1056,7 +1017,6 @@ export class CodeIndexDatabase {
 
         const labels = await this.orchestrator.semanticModuleLabeling(foldersToLabel);
 
-        // Apply labels
         const applyLabels = (nodes: SkeletonNodeData[]) => {
             for (const node of nodes) {
                 if (labels[node.id]) {
@@ -1074,34 +1034,28 @@ export class CodeIndexDatabase {
     }
 
     private generateArchitectureSkeleton(): ArchitectureSkeleton {
-        // 1. Get all file paths and determine workspace root (fallback to common prefix)
-        const fileResults = this.db.prepare(`SELECT DISTINCT file_path FROM symbols`).all() as { file_path: string }[];
-        const rawFilePaths = fileResults.map(f => f.file_path);
+        const fileResults = queryAll(this.db, 'SELECT DISTINCT file_path FROM symbols');
+        const rawFilePaths = fileResults.map((f: any) => f.file_path);
 
         if (rawFilePaths.length === 0) return { nodes: [], edges: [] };
 
-        // Determine common prefix to use as relative root
         const workspaceRoot = this.findCommonPrefix(rawFilePaths);
 
-        // 2. Filter and normalize paths
         const ignoredPatterns = ['.next', 'node_modules', '.git', 'types', 'dist', 'build', '.venv', '__pycache__'];
-        const filteredFiles = rawFilePaths.filter(fp => {
+        const filteredFiles = rawFilePaths.filter((fp: string) => {
             const relPath = path.relative(workspaceRoot, fp);
             const segments = relPath.split(path.sep);
 
-            // Don't filter out everything if workspaceRoot is '/'
             if (relPath === fp && fp.startsWith('/')) {
-                // If it's still absolute, only filter if any segment matches
-                return !segments.some(s => ignoredPatterns.includes(s));
+                return !segments.some((s: string) => ignoredPatterns.includes(s));
             }
 
-            return !segments.some(s => ignoredPatterns.includes(s));
+            return !segments.some((s: string) => ignoredPatterns.includes(s));
         });
 
         const nodesMap = new Map<string, SkeletonNodeData>();
         const root: SkeletonNodeData[] = [];
 
-        // Helper to get or create folder nodes
         const getOrCreateFolder = (relPath: string): SkeletonNodeData => {
             if (nodesMap.has(relPath)) return nodesMap.get(relPath)!;
 
@@ -1124,7 +1078,6 @@ export class CodeIndexDatabase {
 
             nodesMap.set(relPath, folderNode);
 
-            // Link to parent
             if (parts.length > 1) {
                 const parentPath = parts.slice(0, -1).join(path.sep);
                 const parent = getOrCreateFolder(parentPath);
@@ -1136,12 +1089,11 @@ export class CodeIndexDatabase {
             return folderNode;
         };
 
-        // 3. Create file nodes and build basic tree
         for (const fp of filteredFiles) {
             const relPath = path.relative(workspaceRoot, fp);
             const parts = relPath.split(path.sep);
 
-            const symbolsInFile = this.db.prepare(`SELECT id, complexity FROM symbols WHERE file_path = ?`).all(fp) as { id: number; complexity: number }[];
+            const symbolsInFile = queryAll(this.db, 'SELECT id, complexity FROM symbols WHERE file_path = ?', [fp]);
 
             let totalComplexity = 0;
             let totalFragility = 0;
@@ -1154,14 +1106,13 @@ export class CodeIndexDatabase {
                 if (br > maxBlastRadius) maxBlastRadius = br;
             }
 
-            // Get primary imports/dependencies for AI semantic pass
-            const outgoingEdges = this.db.prepare(`
+            const outgoingEdges = queryAll(this.db, `
                 SELECT DISTINCT s2.file_path 
                 FROM edges e 
                 JOIN symbols s2 ON e.target_id = s2.id 
                 WHERE e.source_id IN (SELECT id FROM symbols WHERE file_path = ?)
                 AND s2.file_path != ?
-            `).all(fp, fp) as { file_path: string }[];
+            `, [fp, fp]);
 
             const fileNode: SkeletonNodeData = {
                 id: relPath,
@@ -1173,7 +1124,7 @@ export class CodeIndexDatabase {
                 totalBlastRadius: maxBlastRadius,
                 isFolder: false,
                 depth: parts.length,
-                importPaths: outgoingEdges.map(e => path.relative(workspaceRoot, e.file_path))
+                importPaths: outgoingEdges.map((e: any) => path.relative(workspaceRoot, e.file_path))
             };
 
             nodesMap.set(relPath, fileNode);
@@ -1187,7 +1138,7 @@ export class CodeIndexDatabase {
             }
         }
 
-        // 4. Bottom-up metric aggregation for folder nodes
+        // Bottom-up metric aggregation for folder nodes
         const aggregateMetrics = (node: SkeletonNodeData) => {
             if (!node.isFolder || !node.children) return;
 
@@ -1202,7 +1153,7 @@ export class CodeIndexDatabase {
             for (const child of node.children) {
                 totalSymbols += child.symbolCount;
                 weightedComplexitySum += child.avgComplexity * child.symbolCount;
-                totalFragilitySum += child.avgFragility; // Sum of fragility
+                totalFragilitySum += child.avgFragility;
                 if (child.totalBlastRadius > maxBlastRadius) maxBlastRadius = child.totalBlastRadius;
 
                 if (child.importPaths) {
@@ -1214,13 +1165,13 @@ export class CodeIndexDatabase {
             node.avgComplexity = totalSymbols > 0 ? Math.round((weightedComplexitySum / totalSymbols) * 10) / 10 : 0;
             node.avgFragility = Math.round(totalFragilitySum * 10) / 10;
             node.totalBlastRadius = maxBlastRadius;
-            node.importPaths = Array.from(folderImports).slice(0, 20); // Limit to 20 for AI context
+            node.importPaths = Array.from(folderImports).slice(0, 20);
         };
 
         root.forEach(aggregateMetrics);
 
-        // 5. Build relative edges
-        const edgeStats = this.db.prepare(`
+        // Build relative edges
+        const edgeStats = queryAll(this.db, `
             SELECT 
                 s1.file_path as source_file,
                 s2.file_path as target_file,
@@ -1230,14 +1181,13 @@ export class CodeIndexDatabase {
             JOIN symbols s2 ON e.target_id = s2.id
             WHERE s1.file_path != s2.file_path
             GROUP BY s1.file_path, s2.file_path
-        `).all() as { source_file: string; target_file: string; weight: number }[];
+        `);
 
         const edgesList: SkeletonEdge[] = [];
         for (const stat of edgeStats) {
             const sourceRel = path.relative(workspaceRoot, stat.source_file);
             const targetRel = path.relative(workspaceRoot, stat.target_file);
 
-            // Only include edges between files that weren't ignored
             if (nodesMap.has(sourceRel) && nodesMap.has(targetRel)) {
                 edgesList.push({
                     source: sourceRel,
@@ -1247,7 +1197,7 @@ export class CodeIndexDatabase {
             }
         }
 
-        // 6. Phase 2: Domain Mapping (Initial Heuristic)
+        // Phase 2: Domain Mapping (Initial Heuristic)
         this.assignDomainToFolders(root);
 
         return { nodes: root, edges: edgesList };
@@ -1267,8 +1217,7 @@ export class CodeIndexDatabase {
         if (paths.length === 1) return path.dirname(paths[0]);
 
         const sorted = paths.concat().sort();
-        const a1 = sorted[0], a2 = sorted[sorted.length - 1], L = a1.length, i = 0;
-        let prefix = '';
+        const a1 = sorted[0], a2 = sorted[sorted.length - 1];
         const parts1 = a1.split(path.sep);
         const parts2 = a2.split(path.sep);
         const commonParts = [];
@@ -1295,7 +1244,6 @@ export class CodeIndexDatabase {
         };
 
         const traverse = (node: SkeletonNodeData, inheritedDomain?: string) => {
-            // Apply heuristic or inherited
             let domain = inheritedDomain;
             if (domainHeuristics[node.id]) {
                 domain = domainHeuristics[node.id];
@@ -1325,7 +1273,6 @@ export class CodeIndexDatabase {
         const traceEdges: TraceEdge[] = [];
         const visitedEdges = new Set<string>();
 
-        // BFS State
         const queue: { id: number; depth: number }[] = [{ id: symbolId, depth: 0 }];
         const visited = new Set<number>();
 
@@ -1334,16 +1281,13 @@ export class CodeIndexDatabase {
             if (visited.has(id)) continue;
             visited.add(id);
 
-            // Depth limits: 1 level up, 3 levels down
             if (depth < -1 || depth > 3) continue;
 
             const symbol = this.getSymbolById(id);
             if (!symbol) continue;
 
-            // Add Node
             const nodeId = `${symbol.filePath}:${symbol.name}:${symbol.rangeStartLine}`;
             if (!nodes.has(nodeId)) {
-                // Heuristic for "sink"
                 const nameLower = symbol.name.toLowerCase();
                 const isSink =
                     (symbol.type === 'class' && (symbol.name.includes('DB') || symbol.name.includes('Service') || symbol.name.includes('Client'))) ||
@@ -1370,7 +1314,7 @@ export class CodeIndexDatabase {
 
             // Downstream (Callees)
             if (depth >= 0) {
-                const outEdges = this.drizzle.select().from(edges).where(eq(edges.sourceId, id)).all();
+                const outEdges = queryAll(this.db, 'SELECT * FROM edges WHERE source_id = ?', [id]).map(this.mapRowToEdge);
                 for (const edge of outEdges) {
                     const target = this.getSymbolById(edge.targetId);
                     if (target) {
@@ -1389,7 +1333,7 @@ export class CodeIndexDatabase {
 
             // Upstream (Callers)
             if (depth <= 0) {
-                const inEdges = this.drizzle.select().from(edges).where(eq(edges.targetId, id)).all();
+                const inEdges = queryAll(this.db, 'SELECT * FROM edges WHERE target_id = ?', [id]).map(this.mapRowToEdge);
                 for (const edge of inEdges) {
                     const source = this.getSymbolById(edge.sourceId);
                     if (source) {
@@ -1418,10 +1362,7 @@ export class CodeIndexDatabase {
      * Get cached domain classification
      */
     getDomainCache(symbolId: number): { domain: string; confidence: number } | null {
-        const result = this.db.prepare(`
-            SELECT domain, confidence FROM domain_cache WHERE symbol_id = ?
-            `).get(symbolId) as any;
-
+        const result = queryOne(this.db, 'SELECT domain, confidence FROM domain_cache WHERE symbol_id = ?', [symbolId]);
         return result || null;
     }
 
@@ -1429,27 +1370,21 @@ export class CodeIndexDatabase {
      * Get files belonging to a specific domain
      */
     getFilesByDomain(domain: string): File[] {
-        // Find files that have at least one symbol in this domain
-        const result = this.db.prepare(`
+        const results = queryAll(this.db, `
             SELECT DISTINCT f.*
-        FROM files f
+            FROM files f
             JOIN symbols s ON s.file_path = f.file_path
             WHERE s.domain = ?
-            `).all(domain) as any[];
+        `, [domain]);
 
-        return result.map(row => ({
-            id: row.id,
-            filePath: row.file_path,
-            contentHash: row.content_hash,
-            lastIndexedAt: row.last_indexed_at
-        }));
+        return results.map(this.mapRowToFile);
     }
 
     /**
      * Get file by path
      */
     getFile(filePath: string): { lastModified: string } | null {
-        const file = this.db.prepare('SELECT last_indexed_at FROM files WHERE file_path = ?').get(filePath) as any;
+        const file = queryOne(this.db, 'SELECT last_indexed_at FROM files WHERE file_path = ?', [filePath]);
         if (!file) return null;
         return { lastModified: file.last_indexed_at };
     }
@@ -1464,23 +1399,21 @@ export class CodeIndexDatabase {
         exportCount: number;
         avgComplexity: number
     } {
-        const stats = this.db.prepare(`
+        const stats = queryOne(this.db, `
             SELECT 
                 COUNT(*) as symbol_count,
-            SUM(CASE WHEN type IN('function', 'method', 'constructor') THEN 1 ELSE 0 END) as function_count,
-            AVG(complexity) as avg_complexity
+                SUM(CASE WHEN type IN('function', 'method', 'constructor') THEN 1 ELSE 0 END) as function_count,
+                AVG(complexity) as avg_complexity
             FROM symbols
             WHERE file_path = ?
-            `).get(filePath) as any;
+        `, [filePath]);
 
-        // Note: import/export counts would require analyzing edges which is expensive here
-        // We'll return 0 for now and let the inspector service calculate it if needed via edges
         return {
-            symbolCount: stats.symbol_count || 0,
-            functionCount: stats.function_count || 0,
+            symbolCount: stats?.symbol_count || 0,
+            functionCount: stats?.function_count || 0,
             importCount: 0,
             exportCount: 0,
-            avgComplexity: stats.avg_complexity || 0
+            avgComplexity: stats?.avg_complexity || 0
         };
     }
 
@@ -1488,38 +1421,29 @@ export class CodeIndexDatabase {
      * Get incoming edges for a symbol
      */
     getIncomingEdges(symbolId: number): Edge[] {
-        return this.drizzle
-            .select()
-            .from(edges)
-            .where(eq(edges.targetId, symbolId))
-            .all();
+        return queryAll(this.db, 'SELECT * FROM edges WHERE target_id = ?', [symbolId]).map(this.mapRowToEdge);
     }
 
     /**
      * Get outgoing edges for a symbol
      */
     getOutgoingEdges(symbolId: number): Edge[] {
-        return this.drizzle
-            .select()
-            .from(edges)
-            .where(eq(edges.sourceId, symbolId))
-            .all();
+        return queryAll(this.db, 'SELECT * FROM edges WHERE source_id = ?', [symbolId]).map(this.mapRowToEdge);
     }
 
     /**
      * Update symbol metadata from AI analysis
      */
     updateSymbolsMetadata(updates: { id: number; metadata: any }[]): void {
-        const updateStmt = this.db.prepare(`
-            UPDATE symbols 
-            SET purpose = ?, impact_depth = ?, search_tags = ?, fragility = ?,
-                risk_score = ?, risk_reason = ?, domain = ?
-            WHERE id = ?
-        `);
-
-        const transaction = this.db.transaction((items: { id: number; metadata: any }[]) => {
-            for (const item of items) {
-                updateStmt.run(
+        this.db.run('BEGIN TRANSACTION');
+        try {
+            for (const item of updates) {
+                runSql(this.db, `
+                    UPDATE symbols 
+                    SET purpose = ?, impact_depth = ?, search_tags = ?, fragility = ?,
+                        risk_score = ?, risk_reason = ?, domain = ?
+                    WHERE id = ?
+                `, [
                     item.metadata.purpose || null,
                     item.metadata.impactDepth || null,
                     item.metadata.searchTags || null,
@@ -1528,11 +1452,13 @@ export class CodeIndexDatabase {
                     item.metadata.riskReason || null,
                     item.metadata.domain || null,
                     item.id
-                );
+                ]);
             }
-        });
-
-        transaction(updates);
+            this.db.run('COMMIT');
+        } catch (e) {
+            this.db.run('ROLLBACK');
+            throw e;
+        }
     }
 
     /**
@@ -1540,30 +1466,29 @@ export class CodeIndexDatabase {
      */
     insertTechnicalDebt(items: { symbolId: number; smellType: string; severity: string; description: string }[]): void {
         const now = new Date().toISOString();
-        const insertStmt = this.db.prepare(`
-            INSERT INTO technical_debt(symbol_id, smell_type, severity, description, detected_at)
-            VALUES(?, ?, ?, ?, ?)
-                `);
 
-        const transaction = this.db.transaction(() => {
+        this.db.run('BEGIN TRANSACTION');
+        try {
             // Clear existing debt items first
-            this.db.prepare('DELETE FROM technical_debt').run();
+            this.db.run('DELETE FROM technical_debt');
             for (const item of items) {
-                insertStmt.run(item.symbolId, item.smellType, item.severity, item.description, now);
+                runSql(this.db, `
+                    INSERT INTO technical_debt(symbol_id, smell_type, severity, description, detected_at)
+                    VALUES(?, ?, ?, ?, ?)
+                `, [item.symbolId, item.smellType, item.severity, item.description, now]);
             }
-        });
-
-        transaction();
+            this.db.run('COMMIT');
+        } catch (e) {
+            this.db.run('ROLLBACK');
+            throw e;
+        }
     }
 
     /**
      * Get technical debt items for a symbol
      */
     getTechnicalDebt(symbolId: number): { smellType: string; severity: string; description: string }[] {
-        const results = this.db.prepare(`
-            SELECT smell_type, severity, description FROM technical_debt WHERE symbol_id = ?
-            `).all(symbolId) as any[];
-
+        const results = queryAll(this.db, 'SELECT smell_type, severity, description FROM technical_debt WHERE symbol_id = ?', [symbolId]);
         return results.map(r => ({
             smellType: r.smell_type,
             severity: r.severity,
@@ -1575,11 +1500,10 @@ export class CodeIndexDatabase {
      * Get all technical debt items
      */
     getAllTechnicalDebt(): { symbolId: number; smellType: string; severity: string; description: string }[] {
-        const results = this.db.prepare(`
+        const results = queryAll(this.db, `
             SELECT symbol_id, smell_type, severity, description FROM technical_debt
             ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
-            `).all() as any[];
-
+        `);
         return results.map(r => ({
             symbolId: r.symbol_id,
             smellType: r.smell_type,
@@ -1592,100 +1516,119 @@ export class CodeIndexDatabase {
 
     /**
      * Prepare the database for maximum-speed bulk ingestion.
-     *
-     * Drops all secondary indexes and disables journaling/sync so SQLite
-     * can stream raw pages. Must be called before bulk insertSymbols() calls
-     * and paired with postIndexOptimization() when ingestion is complete.
-     *
-     * WARNING: Do NOT call this during normal incremental indexing — only
-     * during full workspace reindex operations.
      */
     preIndexCleanup(): void {
         console.log('DB: Entering bulk-ingest mode (indexes dropped, sync off)');
-        this.db.exec(`
-            -- Drop secondary indexes to speed up bulk writes
-            DROP INDEX IF EXISTS idx_symbols_name;
-            DROP INDEX IF EXISTS idx_symbols_file_path;
-            DROP INDEX IF EXISTS idx_symbols_type;
-            DROP INDEX IF EXISTS idx_symbols_domain;
-            DROP INDEX IF EXISTS idx_edges_source;
-            DROP INDEX IF EXISTS idx_edges_target;
-            DROP INDEX IF EXISTS idx_edges_type;
-            DROP INDEX IF EXISTS idx_files_path;
-            DROP INDEX IF EXISTS idx_debt_symbol;
-            DROP INDEX IF EXISTS idx_debt_severity;
+        this.db.run('DROP INDEX IF EXISTS idx_symbols_name');
+        this.db.run('DROP INDEX IF EXISTS idx_symbols_file_path');
+        this.db.run('DROP INDEX IF EXISTS idx_symbols_type');
+        this.db.run('DROP INDEX IF EXISTS idx_symbols_domain');
+        this.db.run('DROP INDEX IF EXISTS idx_edges_source');
+        this.db.run('DROP INDEX IF EXISTS idx_edges_target');
+        this.db.run('DROP INDEX IF EXISTS idx_edges_type');
+        this.db.run('DROP INDEX IF EXISTS idx_files_path');
+        this.db.run('DROP INDEX IF EXISTS idx_debt_symbol');
+        this.db.run('DROP INDEX IF EXISTS idx_debt_severity');
 
-            -- Disable safety features for raw insert speed
-            PRAGMA foreign_keys = OFF;
-            PRAGMA synchronous = OFF;
-            PRAGMA journal_mode = MEMORY;
-            PRAGMA cache_size = -65536;  -- 64MB page cache
-            PRAGMA temp_store = MEMORY;
-        `);
+        this.db.run('PRAGMA foreign_keys = OFF');
+        this.db.run('PRAGMA synchronous = OFF');
+        this.db.run('PRAGMA journal_mode = MEMORY');
+        this.db.run('PRAGMA cache_size = -65536');
+        this.db.run('PRAGMA temp_store = MEMORY');
     }
 
     /**
      * Re-create all indexes and restore safety settings after bulk ingestion.
-     * Runs ANALYZE so the query planner has accurate statistics.
-     *
-     * Call this once after all bulk insertSymbols()/insertEdges() calls are done.
      */
     postIndexOptimization(): void {
         console.log('DB: Rebuilding indexes and running ANALYZE...');
-        this.db.exec(`
-            -- Restore safety settings
-            PRAGMA foreign_keys = ON;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA journal_mode = WAL;
+        this.db.run('PRAGMA foreign_keys = ON');
+        this.db.run('PRAGMA synchronous = NORMAL');
+        this.db.run('PRAGMA journal_mode = MEMORY');
 
-            -- Recreate all secondary indexes
-            CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
-            CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);
-            CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(type);
-            CREATE INDEX IF NOT EXISTS idx_symbols_domain ON symbols(domain);
-            CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
-            CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
-            CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type);
-            CREATE INDEX IF NOT EXISTS idx_files_path ON files(file_path);
-            CREATE INDEX IF NOT EXISTS idx_debt_symbol ON technical_debt(symbol_id);
-            CREATE INDEX IF NOT EXISTS idx_debt_severity ON technical_debt(severity);
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(type)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_symbols_domain ON symbols(domain)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_files_path ON files(file_path)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_debt_symbol ON technical_debt(symbol_id)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_debt_severity ON technical_debt(severity)');
 
-            -- Refresh query planner statistics
-            ANALYZE;
-        `);
+        this.db.run('ANALYZE');
         console.log('DB: Post-index optimization complete.');
     }
 
     /**
      * High-throughput edge batch insert.
-     * Wraps all edges in a single transaction with a pre-compiled statement.
-     * Skips edges where source or target is 0 (unresolved).
-     *
-     * @param edges Array of {sourceId, targetId} pairs.
-     * @param type  Edge type string ('call' | 'import').
      */
-    insertEdgeBatch(edges: Array<{ sourceId: number; targetId: number }>, type: string): void {
-        if (edges.length === 0) return;
+    insertEdgeBatch(edgesArray: Array<{ sourceId: number; targetId: number }>, type: string): void {
+        if (edgesArray.length === 0) return;
 
-        const stmt = this.db.prepare(
-            'INSERT OR IGNORE INTO edges (source_id, target_id, type) VALUES (?, ?, ?)'
-        );
-
-        const run = this.db.transaction((items: Array<{ sourceId: number; targetId: number }>) => {
-            for (const e of items) {
+        this.db.run('BEGIN TRANSACTION');
+        try {
+            for (const e of edgesArray) {
                 if (e.sourceId > 0 && e.targetId > 0 && e.sourceId !== e.targetId) {
-                    stmt.run(e.sourceId, e.targetId, type);
+                    runSql(this.db, 'INSERT OR IGNORE INTO edges (source_id, target_id, type) VALUES (?, ?, ?)',
+                        [e.sourceId, e.targetId, type]);
                 }
             }
-        });
-
-        run(edges);
+            this.db.run('COMMIT');
+        } catch (err) {
+            this.db.run('ROLLBACK');
+            throw err;
+        }
     }
 
     /**
      * Close database connection
      */
     close(): void {
+        this.saveToDisk();
         this.db.close();
+    }
+
+    // ========== Row Mappers ==========
+
+    private mapRowToSymbol(row: any): Symbol {
+        return {
+            id: row.id,
+            name: row.name,
+            type: row.type,
+            filePath: row.file_path,
+            rangeStartLine: row.range_start_line,
+            rangeStartColumn: row.range_start_column,
+            rangeEndLine: row.range_end_line,
+            rangeEndColumn: row.range_end_column,
+            complexity: row.complexity,
+            domain: row.domain,
+            purpose: row.purpose,
+            impactDepth: row.impact_depth,
+            searchTags: row.search_tags,
+            fragility: row.fragility,
+            riskScore: row.risk_score,
+            riskReason: row.risk_reason,
+        };
+    }
+
+    private mapRowToEdge(row: any): Edge {
+        return {
+            id: row.id,
+            sourceId: row.source_id,
+            targetId: row.target_id,
+            type: row.type,
+            reason: row.reason,
+        };
+    }
+
+    private mapRowToFile(row: any): File {
+        return {
+            id: row.id,
+            filePath: row.file_path,
+            contentHash: row.content_hash,
+            lastIndexedAt: row.last_indexed_at,
+        };
     }
 }

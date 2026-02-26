@@ -3,7 +3,7 @@
 // Prevents VS Code UI freezing
 
 import { parentPort } from 'worker_threads';
-import { CodeIndexDatabase, Symbol } from '../db/database';
+import { CodeIndexDatabase } from '../db/database';
 import { TreeSitterParser } from './parser';
 import { SymbolExtractor, ImportInfo, CallInfo } from './symbol-extractor';
 import {
@@ -62,7 +62,7 @@ class IndexWorker {
 
             // Initialize database in temp directory
             const dbPath = path.join(os.tmpdir(), 'code-indexer', 'index.db');
-            this.db = new CodeIndexDatabase(dbPath);
+            this.db = await CodeIndexDatabase.create(dbPath);
 
             // Initialize tree-sitter parser
             await this.parser.initialize();
@@ -565,6 +565,7 @@ class IndexWorker {
         }
 
         this.db.setMeta('last_index_time', new Date().toISOString());
+        this.db.saveToDisk();
 
         this.sendMessage({
             type: 'parse-batch-complete',
