@@ -315,9 +315,14 @@ export class WorkerManager {
         model?: string;
         error?: string;
     }> {
-        // Forward request as-is, just ensuring ID is set locally if needed
-        // The worker will respond with the corresponding result type
-        const response = await this.sendRequest(request as any);
+        // AI actions need a much longer timeout — Gemini can take 120-180s
+        // for complex symbols with large dependency graphs.
+        const isAIRequest =
+            request.type === 'inspector-ai-action' ||
+            request.type === 'inspector-ai-why';
+        const timeoutMs = isAIRequest ? 200000 : undefined; // 200s for AI, default for data
+
+        const response = await this.sendRequest(request as any, timeoutMs);
 
         // Map worker response to simpler object for webview
         if (response.type === 'inspector-overview-result') {

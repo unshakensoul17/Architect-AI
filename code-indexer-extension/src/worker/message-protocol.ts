@@ -113,7 +113,7 @@ export type WorkerRequest =
         id: string;
         requestId: string;
         nodeId: string;
-        action: 'explain' | 'audit' | 'refactor' | 'dependencies' | 'optimize';
+        action: 'explain' | 'audit' | 'refactor' | 'optimize';
     }
     | {
         type: 'inspector-ai-why';

@@ -210,8 +210,6 @@ export class GraphWebviewProvider {
         }
     }
 
-
-
     private async openFile(filePath: string, line: number) {
         try {
             let absolutePath = filePath;
@@ -248,10 +246,6 @@ export class GraphWebviewProvider {
         }
     }
 
-    /**
-     * Handle inspector panel messages by forwarding to worker
-     * and sending results back to webview
-     */
     private async handleInspectorMessage(message: {
         type: string;
         requestId: string;
@@ -265,7 +259,6 @@ export class GraphWebviewProvider {
         const messageId = `inspector-${Date.now()}`;
 
         try {
-            // Forward to worker and wait for response
             const response = await this.workerManager.sendInspectorRequest({
                 type: message.type as any,
                 id: messageId,
@@ -276,13 +269,11 @@ export class GraphWebviewProvider {
                 metric: message.metric,
             });
 
-            // Send response back to webview
             this.panel.webview.postMessage({
                 ...response,
                 requestId: message.requestId,
             });
         } catch (error) {
-            // Send error back to webview
             this.panel.webview.postMessage({
                 type: `${message.type}-error`,
                 requestId: message.requestId,
@@ -291,12 +282,8 @@ export class GraphWebviewProvider {
         }
     }
 
-    /**
-     * Preview refactor changes in VS Code diff view
-     */
     private async handlePreviewRefactor(message: { diff: string }): Promise<void> {
         try {
-            // Open a new document with the diff content
             const doc = await vscode.workspace.openTextDocument({
                 content: message.diff,
                 language: 'diff'
@@ -309,9 +296,6 @@ export class GraphWebviewProvider {
         }
     }
 
-    /**
-     * Apply refactor changes to actual files
-     */
     private async handleApplyRefactor(_message: { diff: string }): Promise<void> {
         try {
             const confirm = await vscode.window.showWarningMessage(
@@ -324,7 +308,6 @@ export class GraphWebviewProvider {
                 return;
             }
 
-            // TODO: Implement actual diff application
             vscode.window.showInformationMessage('Refactor application not yet implemented');
         } catch (error) {
             vscode.window.showErrorMessage(
@@ -341,7 +324,6 @@ export class GraphWebviewProvider {
             vscode.Uri.file(path.join(this.context.extensionPath, 'dist', 'webview', 'index.css'))
         );
 
-        // Get nonce for CSP
         const nonce = getNonce();
 
         return `<!DOCTYPE html>

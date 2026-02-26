@@ -258,9 +258,15 @@ function App() {
                             border: '1px solid var(--vscode-input-border)',
                             minWidth: '250px',
                         }}
+                        title="Type at least 3 characters to filter the graph"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                     />
+                    {searchQuery.length > 0 && searchQuery.length < 3 && (
+                        <span style={{ fontSize: '11px', opacity: 0.6, marginLeft: '4px' }}>
+                            {3 - searchQuery.length} more char{searchQuery.length === 2 ? '' : 's'}…
+                        </span>
+                    )}
                     {displayedGraphData && (
                         <div className="text-xs opacity-70">
                             {displayedGraphData.domains?.length || 0} domains · {displayedGraphData.symbols.length} symbols ·{' '}

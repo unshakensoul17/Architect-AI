@@ -12,8 +12,8 @@
  * Renders markdown results inline
  */
 
-import { memo, useCallback, useState } from 'react';
-import { useSelectedId, useAIResult, useIsLoadingAI, useInspectorActions } from '../../stores/useInspectorStore';
+import { memo, useCallback, useState, useEffect, useRef } from 'react';
+import { useSelectedId, useNodeType, useAIResult, useIsLoadingAI, useInspectorActions } from '../../stores/useInspectorStore';
 import CollapsibleSection from './CollapsibleSection';
 import { getDataProvider } from '../../panel/dataProvider';
 import type { VSCodeAPI } from '../../types';
@@ -23,23 +23,41 @@ interface AIActionsSectionProps {
     vscode: VSCodeAPI;
 }
 
-type AIAction = 'explain' | 'audit' | 'refactor' | 'dependencies' | 'optimize';
+type AIAction = 'explain' | 'audit' | 'refactor' | 'optimize';
 
 const AI_ACTIONS: { action: AIAction; icon: string; label: string }[] = [
     { action: 'explain', icon: '▶', label: 'Explain' },
     { action: 'audit', icon: '⚠', label: 'Audit' },
     { action: 'refactor', icon: '🛠', label: 'Refactor' },
-    { action: 'dependencies', icon: '🔗', label: 'Dependencies' },
     { action: 'optimize', icon: '📊', label: 'Optimize' },
 ];
 
 const AIActionsSection = memo(({ vscode }: AIActionsSectionProps) => {
     const selectedId = useSelectedId();
+    const nodeType = useNodeType();
     const aiResult = useAIResult();
     const isLoading = useIsLoadingAI();
     const { setAIResult, setLoadingAI } = useInspectorActions();
 
     const [activeAction, setActiveAction] = useState<AIAction | null>(null);
+    const [elapsedSec, setElapsedSec] = useState(0);
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // Start/stop elapsed timer in sync with loading state
+    useEffect(() => {
+        if (isLoading) {
+            setElapsedSec(0);
+            timerRef.current = setInterval(() => setElapsedSec(s => s + 1), 1000);
+        } else {
+            if (timerRef.current) {
+                clearInterval(timerRef.current);
+                timerRef.current = null;
+            }
+        }
+        return () => {
+            if (timerRef.current) clearInterval(timerRef.current);
+        };
+    }, [isLoading]);
 
     const handleActionClick = useCallback(
         async (action: AIAction) => {
@@ -81,71 +99,89 @@ const AIActionsSection = memo(({ vscode }: AIActionsSectionProps) => {
     return (
         <CollapsibleSection id="ai-actions" title="AI Actions" icon="🤖" loading={false}>
             <div className="ai-actions-container">
-                {/* Action Buttons */}
-                <div className="ai-action-buttons">
-                    {AI_ACTIONS.map(({ action, icon, label }) => (
-                        <button
-                            key={action}
-                            className={`ai-action-btn ${activeAction === action ? 'active' : ''}`}
-                            onClick={() => handleActionClick(action)}
-                            disabled={isLoading || !selectedId}
-                            title={label}
-                        >
-                            <span className="ai-action-icon">{icon}</span>
-                            <span className="ai-action-label">{label}</span>
-                        </button>
-                    ))}
-                </div>
-
-                {/* Loading State */}
-                {isLoading && (
-                    <div className="ai-loading">
-                        <span className="ai-loading-spinner">⏳</span>
-                        <span>Processing with AI...</span>
+                {/* P3-A: Guard — AI actions only work on symbol nodes */}
+                {nodeType !== 'symbol' ? (
+                    <div className="ai-actions-unavailable">
+                        <span className="ai-unavailable-icon">⚡</span>
+                        <span className="ai-unavailable-text">
+                            AI actions are available for <strong>symbol nodes</strong> only.
+                            Click a function or class in the graph to analyse it.
+                        </span>
                     </div>
-                )}
-
-                {/* Result Display */}
-                {aiResult && !isLoading && (
-                    <div className="ai-result-container">
-                        {/* Result Header */}
-                        <div className="ai-result-header">
-                            <div className="ai-result-meta">
-                                <span className="ai-model-badge">
-                                    {aiResult.model === 'vertex' ? '🧠 Vertex' : '⚡ Groq'}
-                                </span>
-                                {aiResult.cached && (
-                                    <span className="ai-cached-badge">📦 Cached</span>
-                                )}
-                            </div>
-                            <button
-                                className="ai-result-close"
-                                onClick={handleClearResult}
-                                title="Clear result"
-                            >
-                                ×
-                            </button>
+                ) : (
+                    <>
+                        {/* Action Buttons */}
+                        <div className="ai-action-buttons">
+                            {AI_ACTIONS.map(({ action, icon, label }) => (
+                                <button
+                                    key={action}
+                                    className={`ai-action-btn ${activeAction === action ? 'active' : ''}`}
+                                    onClick={() => handleActionClick(action)}
+                                    disabled={isLoading || !selectedId}
+                                    title={label}
+                                >
+                                    <span className="ai-action-icon">{icon}</span>
+                                    <span className="ai-action-label">{label}</span>
+                                </button>
+                            ))}
                         </div>
 
-                        {/* Error State */}
-                        {aiResult.error && (
-                            <div className="ai-error">
-                                ❌ {aiResult.error}
+                        {/* Loading State */}
+                        {isLoading && (
+                            <div className="ai-loading">
+                                <span className="ai-loading-spinner">⏳</span>
+                                <div className="ai-loading-text">
+                                    <span>Analysing with AI… {elapsedSec}s</span>
+                                    {elapsedSec >= 5 && (
+                                        <span className="ai-loading-hint">Using Gemini for deep analysis</span>
+                                    )}
+                                </div>
                             </div>
                         )}
 
-                        {/* Content */}
-                        {aiResult.content && (
-                            <div className="ai-result-content">
-                                <AIMarkdownRenderer content={aiResult.content} />
+                        {/* Result Display */}
+                        {aiResult && !isLoading && (
+                            <div className="ai-result-container">
+                                {/* Result Header */}
+                                <div className="ai-result-header">
+                                    <div className="ai-result-meta">
+                                        <span className="ai-model-badge">
+                                            {aiResult.model === 'vertex' ? '🧠 Vertex' : '⚡ Groq'}
+                                        </span>
+                                        {aiResult.cached && (
+                                            <span className="ai-cached-badge">📦 Cached</span>
+                                        )}
+                                    </div>
+                                    <button
+                                        className="ai-result-close"
+                                        onClick={handleClearResult}
+                                        title="Clear result"
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+
+                                {/* Error State */}
+                                {aiResult.error && (
+                                    <div className="ai-error">
+                                        ❌ {aiResult.error}
+                                    </div>
+                                )}
+
+                                {/* Content */}
+                                {aiResult.content && (
+                                    <div className="ai-result-content">
+                                        <AIMarkdownRenderer content={aiResult.content} />
+                                    </div>
+                                )}
+
+                                {/* Refactor Patch */}
+                                {aiResult.patch && (
+                                    <RefactorPatchDisplay patch={aiResult.patch} vscode={vscode} />
+                                )}
                             </div>
                         )}
-
-                        {/* Refactor Patch */}
-                        {aiResult.patch && (
-                            <RefactorPatchDisplay patch={aiResult.patch} vscode={vscode} />
-                        )}
-                    </div>
+                    </>
                 )}
             </div>
         </CollapsibleSection>

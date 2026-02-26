@@ -20,7 +20,6 @@ import OverviewSection from './OverviewSection';
 import DependenciesSection from './DependenciesSection';
 import RisksHealthSection from './RisksHealthSection';
 import AIActionsSection from './AIActionsSection';
-import RefactorImpactSection from './RefactorImpactSection';
 import type { VSCodeAPI } from '../../types';
 import './InspectorPanel.css';
 
@@ -46,6 +45,9 @@ const InspectorPanel = memo(({ vscode, onClose, onFocusNode }: InspectorPanelPro
     // Ref for debounce timer - NOT state to avoid re-renders
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const fetchedIdRef = useRef<string | null>(null);
+    // Generation counter: incremented on every selection change.
+    // Async callbacks compare against this to discard stale results.
+    const requestGenRef = useRef<number>(0);
 
     // Fetch data when selection changes (debounced 50ms)
     useEffect(() => {
@@ -55,19 +57,26 @@ const InspectorPanel = memo(({ vscode, onClose, onFocusNode }: InspectorPanelPro
             debounceRef.current = null;
         }
 
-        // Skip if no selection or same as already fetched
         if (!selectedId || !nodeType) {
             return;
         }
 
-        // Prevent duplicate fetches for same ID
+        // Skip if same node as already fetched (quick re-render guard)
         if (fetchedIdRef.current === selectedId) {
             return;
         }
 
+        // Increment generation — any in-flight callbacks from previous
+        // selections will see a stale generation and discard their results
+        const gen = ++requestGenRef.current;
+
         debounceRef.current = setTimeout(async () => {
-            fetchedIdRef.current = selectedId;
+            // Cancel only data-fetch requests (overview/deps/risks) from the previous
+            // selection. AI action requests intentionally run to completion.
             const provider = getDataProvider(vscode);
+            provider.cancelDataRequests();
+
+            fetchedIdRef.current = selectedId;
 
             // Set loading states BEFORE fetch
             setLoadingOverview(true);
@@ -82,30 +91,31 @@ const InspectorPanel = memo(({ vscode, onClose, onFocusNode }: InspectorPanelPro
                     provider.getRisks(selectedId, nodeType),
                 ]);
 
-                // Handle results - only update if still same selection
-                if (fetchedIdRef.current === selectedId) {
-                    if (overview.status === 'fulfilled') {
-                        setOverview(overview.value);
-                    } else {
-                        setLoadingOverview(false);
-                        console.warn('Failed to fetch overview:', overview.reason);
-                    }
+                // Stale-response guard: discard if user has moved to a different node
+                if (requestGenRef.current !== gen) return;
 
-                    if (deps.status === 'fulfilled') {
-                        setDeps(deps.value);
-                    } else {
-                        setLoadingDeps(false);
-                        console.warn('Failed to fetch deps:', deps.reason);
-                    }
+                if (overview.status === 'fulfilled') {
+                    setOverview(overview.value);
+                } else {
+                    setLoadingOverview(false);
+                    console.warn('Failed to fetch overview:', overview.reason);
+                }
 
-                    if (risks.status === 'fulfilled') {
-                        setRisks(risks.value);
-                    } else {
-                        setLoadingRisks(false);
-                        console.warn('Failed to fetch risks:', risks.reason);
-                    }
+                if (deps.status === 'fulfilled') {
+                    setDeps(deps.value);
+                } else {
+                    setLoadingDeps(false);
+                    console.warn('Failed to fetch deps:', deps.reason);
+                }
+
+                if (risks.status === 'fulfilled') {
+                    setRisks(risks.value);
+                } else {
+                    setLoadingRisks(false);
+                    console.warn('Failed to fetch risks:', risks.reason);
                 }
             } catch (error) {
+                if (requestGenRef.current !== gen) return;
                 console.error('Failed to fetch inspector data:', error);
                 setLoadingOverview(false);
                 setLoadingDeps(false);
@@ -195,7 +205,6 @@ const InspectorPanel = memo(({ vscode, onClose, onFocusNode }: InspectorPanelPro
                 <DependenciesSection onDependencyClick={handleDependencyClick} />
                 <RisksHealthSection vscode={vscode} />
                 <AIActionsSection vscode={vscode} />
-                <RefactorImpactSection vscode={vscode} />
             </div>
         </div>
     );

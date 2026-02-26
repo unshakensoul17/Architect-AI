@@ -719,12 +719,18 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
             return { visibleNodes: [], visibleEdges: [] };
         }
 
+        // P4: Reconstruct the Set from the stable key string (same content, stable reference)
+        // This prevents applyGraphFilter from re-running due to a new Set object every render.
+        const stableRelatedNodeIds = relatedNodeIdsKey
+            ? new Set(relatedNodeIdsKey.split(',').filter(Boolean))
+            : new Set<string>();
+
         const context: FilterContext = {
             mode: currentMode,
             focusedNodeId,
-            relatedNodeIds,
+            relatedNodeIds: stableRelatedNodeIds,
             riskThresholds: DEFAULT_RISK_THRESHOLDS,
-            searchQuery,
+            searchQuery: searchQuery || '',
         };
 
         const result = applyGraphFilter(allNodes, allEdges, context);

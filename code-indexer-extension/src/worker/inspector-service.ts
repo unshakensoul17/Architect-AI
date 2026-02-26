@@ -14,6 +14,7 @@
 import * as path from 'path';
 import { CodeIndexDatabase } from '../db/database';
 import { AIOrchestrator } from '../ai/orchestrator';
+import { computeDomainHealth } from '../domain/health';
 import {
     InspectorOverviewData,
     InspectorDependencyData,
@@ -54,20 +55,24 @@ export class InspectorService {
                 data.name = domainName;
                 data.path = 'Domain';
 
-                const files = this.db.getFilesByDomain(domainName);
-                if (files) {
-                    data.fileCount = files.length;
+                const domainFiles = this.db.getFilesByDomain(domainName);
+                if (domainFiles) {
+                    data.fileCount = domainFiles.length;
                     let functionCount = 0;
-                    // Aggregate function count
-                    for (const file of files) {
+                    for (const file of domainFiles) {
                         const stats = this.db.getFileStats(file.filePath);
                         if (stats) functionCount += stats.functionCount;
                     }
                     data.functionCount = functionCount;
-                    // Mock health/coupling for now until metrics engine is ready
-                    data.healthPercent = 85;
-                    data.coupling = 0.3;
                 }
+
+                // P1-A: Real health using computeDomainHealth()
+                const domainSymbols = this.db.getSymbolsByDomain(domainName);
+                const { crossDomain, total } = this.db.getDomainEdgeCounts(domainName);
+                const health = computeDomainHealth(domainName, domainSymbols, crossDomain, total);
+                data.healthPercent = health.healthScore;
+                data.coupling = health.coupling;
+                data.functionCount = data.functionCount ?? health.symbolCount;
             } else if (nodeType === 'file') {
                 // Remove potential domain prefix if present for lookup
                 let filePath = this.resolvePath(nodeId.startsWith('domain:') ? nodeId.substring(7) : nodeId);
@@ -82,11 +87,14 @@ export class InspectorService {
 
                 const stats = this.db.getFileStats(filePath);
                 if (stats) {
-                    data.symbolCount = stats.symbolCount; // Assuming this exists in stats
-                    data.importCount = 0; // Need to calculate from edges
-                    data.exportCount = 0; // Need to calculate
-                    data.avgComplexity = 5; // Placeholder
+                    data.symbolCount = stats.symbolCount;
+                    data.avgComplexity = 5; // Refined below from symbol scan
                 }
+
+                // P1-B: Real import/export counts from edge table
+                const edgeCounts = this.db.getFileEdgeCounts(filePath);
+                data.importCount = edgeCounts.importCount;
+                data.exportCount = edgeCounts.exportCount;
 
                 // Calculate imports/exports from edges
                 const symbols = this.db.getSymbolsByFile(filePath);
@@ -252,8 +260,8 @@ export class InspectorService {
                     const symbolName = parts[parts.length - 2];
                     const filePath = this.resolvePath(parts.slice(0, -2).join(':'));
 
-                    const symbols = this.db.getSymbolsByFile(filePath);
-                    const symbol = symbols.find(s => s.name === symbolName && s.rangeStartLine === line);
+                    const fileSymbols = this.db.getSymbolsByFile(filePath);
+                    const symbol = fileSymbols.find(s => s.name === symbolName && s.rangeStartLine === line);
 
                     if (symbol) {
                         // Use AI risk score if available (from Architect Pass)
@@ -292,6 +300,65 @@ export class InspectorService {
                         }
                     }
                 }
+
+                // P1-C: Domain risk — based on avg complexity across all symbols in domain
+            } else if (nodeType === 'domain') {
+                const domainName = nodeId.replace(/^domain:/, '');
+                const domainSymbols = this.db.getSymbolsByDomain(domainName);
+
+                if (domainSymbols.length > 0) {
+                    const avgComplexity = domainSymbols.reduce((s, sym) => s + sym.complexity, 0) / domainSymbols.length;
+                    const highComplexitySymbols = domainSymbols.filter(s => s.complexity > 15);
+                    const fragileSymbols = domainSymbols.filter(s => s.fragility === 'high');
+
+                    heatScore = Math.min(100, Math.round(avgComplexity * 3.5));
+
+                    if (highComplexitySymbols.length > 0) {
+                        warnings.push(`${highComplexitySymbols.length} high-complexity symbol(s) (complexity > 15)`);
+                    }
+                    if (fragileSymbols.length > 0) {
+                        warnings.push(`${fragileSymbols.length} AI-flagged fragile symbol(s)`);
+                        heatScore = Math.max(heatScore, 50);
+                    }
+
+                    const { crossDomain, total } = this.db.getDomainEdgeCounts(domainName);
+                    const coupling = total > 0 ? crossDomain / total : 0;
+                    if (coupling > 0.6) {
+                        warnings.push(`High cross-domain coupling (${Math.round(coupling * 100)}% of edges cross domain boundary)`);
+                        heatScore = Math.max(heatScore, 45);
+                    }
+                }
+
+                // P1-C: File risk — based on avg complexity + coupling of symbols in file
+            } else if (nodeType === 'file') {
+                let filePath = this.resolvePath(nodeId.startsWith('domain:') ? nodeId.substring(7) : nodeId);
+                // Strip leading domain prefix if format is "domain:path"
+                const colonIdx = filePath.indexOf(':');
+                if (colonIdx > 0 && !filePath.includes('/')) filePath = filePath.substring(colonIdx + 1);
+
+                const fileSymbols = this.db.getSymbolsByFile(filePath);
+
+                if (fileSymbols.length > 0) {
+                    const avgComplexity = fileSymbols.reduce((s, sym) => s + sym.complexity, 0) / fileSymbols.length;
+                    const highComplexity = fileSymbols.filter(s => s.complexity > 15);
+                    const fragile = fileSymbols.filter(s => s.fragility === 'high');
+
+                    heatScore = Math.min(100, Math.round(avgComplexity * 3.5));
+
+                    if (highComplexity.length > 0) {
+                        warnings.push(`${highComplexity.length} high-complexity function(s)`);
+                    }
+                    if (fragile.length > 0) {
+                        warnings.push(`${fragile.length} fragile symbol(s) in this file`);
+                        heatScore = Math.max(heatScore, 50);
+                    }
+
+                    const { importCount } = this.db.getFileEdgeCounts(filePath);
+                    if (importCount > 15) {
+                        warnings.push(`High file coupling (${importCount} outgoing imports)`);
+                        heatScore = Math.max(heatScore, 35);
+                    }
+                }
             }
 
             if (heatScore > 60) level = 'high';
@@ -309,7 +376,7 @@ export class InspectorService {
      */
     async executeAIAction(
         nodeId: string,
-        action: 'explain' | 'audit' | 'refactor' | 'dependencies' | 'optimize'
+        action: 'explain' | 'audit' | 'refactor' | 'optimize'
     ): Promise<InspectorAIResult> {
 
         let prompt = '';
@@ -317,7 +384,6 @@ export class InspectorService {
 
         if (action === 'refactor') analysisType = 'refactor';
         else if (action === 'audit') analysisType = 'security';
-        else if (action === 'dependencies') analysisType = 'dependencies';
 
         // **FIX 2: EXTRACT SYMBOL ID FROM NODE ID**
         // Parse the nodeId to get symbolId for context fetching
@@ -347,7 +413,19 @@ export class InspectorService {
         else if (action === 'audit') prompt = `Perform a thorough security audit of this code. Identify vulnerabilities, risky patterns, and suggest fixes.`;
         else if (action === 'refactor') prompt = `Analyze this code for quality issues and suggest specific refactoring improvements with code examples.`;
         else if (action === 'optimize') prompt = `Analyze this code for performance bottlenecks and suggest optimizations.`;
-        else if (action === 'dependencies') prompt = `Analyze the dependency relationships for this code, including coupling and impact.`;
+
+        // P3-B: Guard — if we couldn't resolve a symbolId, bail out early with
+        // a helpful message rather than sending a contextless prompt to the AI
+        if (!symbolId) {
+            return {
+                action,
+                content: '',
+                model: 'none',
+                cached: false,
+                loading: false,
+                error: 'AI analysis requires a symbol node. Select a function or class in the graph first.',
+            };
+        }
 
         try {
             // Use orchestrator with proper symbolId for context

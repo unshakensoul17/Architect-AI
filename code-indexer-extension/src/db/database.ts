@@ -346,8 +346,90 @@ export class CodeIndexDatabase {
     }
 
     /**
-     * Get all files
+     * Get all symbols belonging to a specific domain
+     * Used by InspectorService for domain health calculation
      */
+    getSymbolsByDomain(domain: string): Symbol[] {
+        const rows = this.db.prepare(`
+            SELECT * FROM symbols WHERE domain = ?
+        `).all(domain) as any[];
+        return rows.map(r => ({
+            id: r.id,
+            name: r.name,
+            type: r.type,
+            filePath: r.file_path,
+            rangeStartLine: r.range_start_line,
+            rangeStartColumn: r.range_start_column,
+            rangeEndLine: r.range_end_line,
+            rangeEndColumn: r.range_end_column,
+            complexity: r.complexity,
+            domain: r.domain,
+            purpose: r.purpose,
+            impactDepth: r.impact_depth,
+            searchTags: r.search_tags,
+            fragility: r.fragility,
+        }));
+    }
+
+    /**
+     * Get cross-domain vs total edge counts for a domain
+     * Used to compute coupling ratio (cross-domain / total)
+     */
+    getDomainEdgeCounts(domain: string): { crossDomain: number; total: number } {
+        // All edges where source symbol is in this domain
+        const totalRow = this.db.prepare(`
+            SELECT COUNT(*) as cnt
+            FROM edges e
+            JOIN symbols s ON e.source_id = s.id
+            WHERE s.domain = ?
+        `).get(domain) as { cnt: number };
+
+        // Edges where target symbol is in a DIFFERENT domain
+        const crossRow = this.db.prepare(`
+            SELECT COUNT(*) as cnt
+            FROM edges e
+            JOIN symbols src ON e.source_id = src.id
+            JOIN symbols tgt ON e.target_id = tgt.id
+            WHERE src.domain = ? AND (tgt.domain IS NULL OR tgt.domain != ?)
+        `).get(domain, domain) as { cnt: number };
+
+        return {
+            total: totalRow?.cnt ?? 0,
+            crossDomain: crossRow?.cnt ?? 0,
+        };
+    }
+
+    /**
+     * Get import and export edge counts for a file
+     * importCount = edges pointing OUT of any symbol in this file (this file imports others)
+     * exportCount = edges pointing INTO symbols in this file (others import from this file)
+     */
+    getFileEdgeCounts(filePath: string): { importCount: number; exportCount: number } {
+        const importRow = this.db.prepare(`
+            SELECT COUNT(*) as cnt
+            FROM edges e
+            JOIN symbols src ON e.source_id = src.id
+            JOIN symbols tgt ON e.target_id = tgt.id
+            WHERE src.file_path = ? AND tgt.file_path != ?
+              AND e.type = 'import'
+        `).get(filePath, filePath) as { cnt: number };
+
+        const exportRow = this.db.prepare(`
+            SELECT COUNT(*) as cnt
+            FROM edges e
+            JOIN symbols src ON e.source_id = src.id
+            JOIN symbols tgt ON e.target_id = tgt.id
+            WHERE tgt.file_path = ? AND src.file_path != ?
+              AND e.type = 'import'
+        `).get(filePath, filePath) as { cnt: number };
+
+        return {
+            importCount: importRow?.cnt ?? 0,
+            exportCount: exportRow?.cnt ?? 0,
+        };
+    }
+
+
     getAllFiles(): File[] {
         return this.drizzle.select().from(files).all();
     }
@@ -778,16 +860,6 @@ export class CodeIndexDatabase {
 
     // ========== Domain Operations ==========
 
-    /**
-     * Get symbols by domain
-     */
-    getSymbolsByDomain(domain: string): Symbol[] {
-        return this.drizzle
-            .select()
-            .from(symbols)
-            .where(eq(symbols.domain, domain))
-            .all();
-    }
 
     /**
      * Get domain statistics

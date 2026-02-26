@@ -17,6 +17,7 @@ interface PendingRequest<T> {
     resolve: (value: T) => void;
     reject: (error: Error) => void;
     timeout: ReturnType<typeof setTimeout>;
+    requestType: string;
 }
 
 interface CacheEntry<T> {
@@ -107,6 +108,7 @@ class InspectorDataProvider {
                 resolve: resolve as (value: unknown) => void,
                 reject,
                 timeout,
+                requestType: type,
             });
 
             this.vscode.postMessage({
@@ -174,7 +176,7 @@ class InspectorDataProvider {
      */
     async executeAIAction(
         id: string,
-        action: 'explain' | 'audit' | 'refactor' | 'dependencies' | 'optimize'
+        action: 'explain' | 'audit' | 'refactor' | 'optimize'
     ): Promise<AIResult> {
         // Check cache for AI results too
         const cacheKey = this.getCacheKey(`ai-${action}`, id);
@@ -186,7 +188,7 @@ class InspectorDataProvider {
         const result = await this.request<AIResult>(
             'inspector-ai-action',
             { nodeId: id, action },
-            30000 // 30 second timeout for AI
+            200000 // 200s — Gemini can take 120-173s for complex symbols
         );
 
         this.setCache(cacheKey, result);
@@ -201,10 +203,26 @@ class InspectorDataProvider {
     }
 
     /**
-     * Cancel all pending requests
+     * Cancel only data-fetch requests (overview / deps / risks).
+     * AI action requests are intentionally LEFT running — they are expensive
+     * and the user expects a result even if they click elsewhere on the graph.
+     */
+    cancelDataRequests(): void {
+        const AI_TYPES = new Set(['inspector-ai-action', 'inspector-ai-why']);
+        for (const [requestId, pending] of this.pendingRequests) {
+            if (!AI_TYPES.has(pending.requestType)) {
+                clearTimeout(pending.timeout);
+                pending.reject(new Error('Request cancelled'));
+                this.pendingRequests.delete(requestId);
+            }
+        }
+    }
+
+    /**
+     * Cancel ALL pending requests (use only on panel teardown / hard reset)
      */
     cancelPendingRequests(): void {
-        for (const [requestId, pending] of this.pendingRequests) {
+        for (const [, pending] of this.pendingRequests) {
             clearTimeout(pending.timeout);
             pending.reject(new Error('Request cancelled'));
         }

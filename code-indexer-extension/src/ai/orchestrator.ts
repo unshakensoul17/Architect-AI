@@ -12,27 +12,30 @@ import { DomainClassification, DomainType } from '../domain/classifier';
 import * as fs from 'fs';
 
 /**
- * Refined metadata from Architect Pass
+ * Structured JSON context sent to the AI for node analysis.
+ * Only the targetSymbol includes raw source code.
+ * Neighbors are lightweight metadata stubs (no file reads).
  */
-export interface RefinedNodeData {
-    id: string; // matches format used in graph
-    purpose: string;
-    impact_depth: number;
-    search_tags: string[]; // will be serialized to JSON in DB
-    fragility: string;
-    risk_score: number; // 0-100 AI-calculated risk severity
-    risk_reason: string; // AI explanation (e.g. "If this fails, the Auth flow stops")
+export interface NodeDependencyStub {
+    name: string;
+    type: string;           // function, class, variable, etc.
+    filePath: string;
+    relationType: string;   // 'call' | 'import' | 'inherit' | 'implement'
 }
 
-export interface RefinedEdgeData {
-    sourceId: string;
-    targetId: string;
-    reason: string;
-}
-
-export interface RefinedGraph {
-    nodes: Record<string, RefinedNodeData>;
-    implicit_links: RefinedEdgeData[];
+export interface NodeContext {
+    targetSymbol: {
+        name: string;
+        type: string;
+        filePath: string;
+        lines: string;           // "startLine-endLine"
+        complexity: number;
+        code: string;            // Raw source code of this symbol only
+    };
+    dependencies: {
+        outgoing: NodeDependencyStub[]; // what this symbol calls / imports
+        incoming: NodeDependencyStub[]; // what calls / imports this symbol
+    };
 }
 
 /**
@@ -101,24 +104,24 @@ export class AIOrchestrator {
         const intent = this.intentRouter.classify(query);
         console.log(`[Orchestrator] Intent: ${intent.type} (confidence: ${intent.confidence.toFixed(2)})`);
 
-        // 2. Assemble context if symbol provided
+        // 2. Assemble context from SQLite if a symbol was provided
         let context: SymbolContext | null = null;
-        let codeSnippets: string[] = [];
+        let nodeContext: NodeContext | null = null;
 
         if (options.symbolId || options.symbolName) {
             context = await this.assembleContext(options);
             if (context) {
-                codeSnippets = await this.extractCodeSnippets(context);
+                nodeContext = this.buildNodeContext(context);
             }
         }
 
-        // 3. Build prompt with context
-        const prompt = this.buildPrompt(query, context, codeSnippets);
+        // 3. Build prompt using structured JSON context
+        const prompt = this.buildPrompt(query, nodeContext);
 
         // 4. Check Cache
         let cacheHash: string | null = null;
-        if (context) {
-            cacheHash = this.computeCacheHash(query, codeSnippets, options.analysisType);
+        if (nodeContext) {
+            cacheHash = this.computeCacheHash(query, nodeContext, options.analysisType);
             const cachedEntry = this.db.getAICache(cacheHash);
             if (cachedEntry) {
                 try {
@@ -135,14 +138,16 @@ export class AIOrchestrator {
         // 5. Route to appropriate model
         let response: AIResponse;
 
-        if (intent.type === 'reflex') {
+        // forceReflex=true bypasses intent classification for fast, interactive queries
+        // (Inspector panel buttons). The strategic path (Gemini) takes 120-170s for
+        // preview models — far too slow for on-demand UI actions.
+        if (options.forceReflex || intent.type === 'reflex') {
             response = await this.executeReflexPath(prompt, intent, context);
         } else {
             response = await this.executeStrategicPath(
                 prompt,
                 intent,
                 context,
-                codeSnippets,
                 options.analysisType || 'general'
             );
         }
@@ -159,12 +164,15 @@ export class AIOrchestrator {
     }
 
     /**
-     * Compute cache hash based on query, code context, and analysis type
+     * Compute cache hash based on query, structured node context, and analysis type.
+     * Hashes the target symbol's code + its dependency stubs (not neighbor raw code).
      */
-    private computeCacheHash(query: string, codeSnippets: string[], analysisType?: string): string {
+    private computeCacheHash(query: string, nodeContext: NodeContext, analysisType?: string): string {
         const str = JSON.stringify({
             query,
-            codeSnippets,
+            targetCode: nodeContext.targetSymbol.code,
+            outgoingIds: nodeContext.dependencies.outgoing.map(d => d.name + d.filePath),
+            incomingIds: nodeContext.dependencies.incoming.map(d => d.name + d.filePath),
             analysisType: analysisType || 'general'
         });
         return CodeIndexDatabase.computeHash(str);
@@ -192,109 +200,144 @@ export class AIOrchestrator {
     }
 
     /**
-     * Extract code snippets from context
-     * CRITICAL: Includes the TARGET symbol's code first, then neighbors
-     * 
-     * ENHANCED (Phase 2.2): Cross-File Summarization
-     * If a neighbor already has an AI-generated `purpose` (from Architect Pass),
-     * inject that 1-line summary instead of the full source code.
-     * This dramatically reduces token usage while preserving architectural context.
+     * Build a structured NodeContext JSON for AI prompts.
+     *
+     * Strategy:
+     *   - TARGET: Read raw source code from disk (only this one file read).
+     *   - NEIGHBORS: Map incoming/outgoing edges to lightweight stubs using
+     *     already-available SQLite data. Zero file system reads for neighbors.
+     *
+     * This replaces the old extractCodeSnippets approach which dumped thousands
+     * of lines of raw neighbor code into the prompt, causing token bloat and
+     * LLM "Lost in the Middle" confusion.
      */
-    private async extractCodeSnippets(context: SymbolContext): Promise<string[]> {
-        const snippets: string[] = [];
-        let summarizedCount = 0;
-        let rawCount = 0;
+    private buildNodeContext(context: SymbolContext): NodeContext {
+        const { symbol, outgoingEdges, incomingEdges, neighbors } = context;
 
-        // Helper to read code from file
-        const readSymbolCode = (symbol: { filePath: string; rangeStartLine: number; rangeEndLine: number }): string => {
-            try {
-                if (!fs.existsSync(symbol.filePath)) {
-                    return `// File not found: ${symbol.filePath}`;
-                }
+        // --- 1. Read TARGET source code from disk (the only file read) ---
+        let targetCode = '// Source code unavailable';
+        try {
+            if (fs.existsSync(symbol.filePath)) {
                 const content = fs.readFileSync(symbol.filePath, 'utf-8');
                 const lines = content.split('\n');
                 const start = Math.max(0, symbol.rangeStartLine - 1);
                 const end = Math.min(lines.length, symbol.rangeEndLine);
-                return lines.slice(start, end).join('\n');
-            } catch (error) {
-                return `// Error reading file: ${(error as Error).message}`;
-            }
-        };
-
-        // TARGET symbol always gets full code — the AI needs to see what it's analyzing!
-        const targetCode = readSymbolCode(context.symbol);
-        snippets.push(`// TARGET: ${context.symbol.name} (${context.symbol.type})\n${targetCode}`);
-
-        // Extract neighbor context — use summaries when available
-        for (const neighbor of context.neighbors) {
-            const neighborAny = neighbor as any;
-
-            if (neighborAny.purpose && typeof neighborAny.purpose === 'string') {
-                // Cross-File Summarization: use AI-generated purpose instead of raw code
-                const fragility = neighborAny.fragility ? ` [fragility: ${neighborAny.fragility}]` : '';
-                const domain = neighborAny.domain ? ` [${neighborAny.domain}]` : '';
-                snippets.push(
-                    `// RELATED: ${neighbor.name} (${neighbor.type})${domain}${fragility} — ${neighborAny.purpose}`
-                );
-                summarizedCount++;
+                targetCode = lines.slice(start, end).join('\n');
             } else {
-                // No AI summary yet — inject raw code
-                const code = readSymbolCode(neighbor);
-                snippets.push(`// RELATED: ${neighbor.name} (${neighbor.type}) from ${neighbor.filePath}\n${code}`);
-                rawCount++;
+                targetCode = `// File not found: ${symbol.filePath}`;
+            }
+        } catch (error) {
+            targetCode = `// Error reading file: ${(error as Error).message}`;
+        }
+
+        // --- 2. Build a fast lookup map of neighbor id -> symbol for edge resolution ---
+        const neighborMap = new Map<number, typeof neighbors[number]>();
+        for (const n of neighbors) {
+            neighborMap.set(n.id, n);
+        }
+
+        // --- 3. Map outgoing edges (what this symbol calls/imports) ---
+        const outgoing: NodeDependencyStub[] = [];
+        for (const edge of outgoingEdges) {
+            const target = neighborMap.get(edge.targetId);
+            if (target) {
+                outgoing.push({
+                    name: target.name,
+                    type: target.type,
+                    filePath: target.filePath,
+                    relationType: edge.type,
+                });
             }
         }
 
-        console.log(`[Orchestrator] Context: target code + ${summarizedCount} summarized + ${rawCount} raw neighbors`);
-        return snippets;
+        // --- 4. Map incoming edges (what calls/imports this symbol) ---
+        const incoming: NodeDependencyStub[] = [];
+        for (const edge of incomingEdges) {
+            const source = neighborMap.get(edge.sourceId);
+            if (source) {
+                incoming.push({
+                    name: source.name,
+                    type: source.type,
+                    filePath: source.filePath,
+                    relationType: edge.type,
+                });
+            }
+        }
+
+        console.log(
+            `[Orchestrator] NodeContext built: target="${symbol.name}" ` +
+            `outgoing=${outgoing.length} incoming=${incoming.length} (0 neighbor file reads)`
+        );
+
+        return {
+            targetSymbol: {
+                name: symbol.name,
+                type: symbol.type,
+                filePath: symbol.filePath,
+                lines: `${symbol.rangeStartLine}-${symbol.rangeEndLine}`,
+                complexity: symbol.complexity,
+                code: targetCode,
+            },
+            dependencies: { outgoing, incoming },
+        };
     }
 
     /**
-     * Build prompt with context
-     * 
-     * ENHANCED (Phase 2.1): Chain-of-Architectural-Thought
-     * Instructs the AI to identify design patterns before answering,
-     * producing richer architectural analysis instead of just code explanation.
+     * Build the final LLM prompt using the structured NodeContext.
+     *
+     * Structure:
+     *   1. Target symbol source code (raw — AI needs to read this)
+     *   2. Dependency graph JSON block (lightweight stubs, no raw neighbor code)
+     *   3. Architectural analysis instruction (Chain-of-Thought)
+     *   4. The specific user question / task
      */
-    private buildPrompt(query: string, context: SymbolContext | null, neighborCode: string[]): string {
+    private buildPrompt(query: string, nodeContext: NodeContext | null): string {
         let prompt = '';
 
-        if (context) {
+        if (nodeContext) {
+            const { targetSymbol, dependencies } = nodeContext;
+
+            // --- Block 1: Target source code ---
             prompt += `## Target Symbol\n`;
-            prompt += `Name: ${context.symbol.name}\n`;
-            prompt += `Type: ${context.symbol.type}\n`;
-            prompt += `File: ${context.symbol.filePath}\n`;
-            prompt += `Lines: ${context.symbol.rangeStartLine}-${context.symbol.rangeEndLine}\n\n`;
+            prompt += `Name: ${targetSymbol.name}\n`;
+            prompt += `Type: ${targetSymbol.type}\n`;
+            prompt += `File: ${targetSymbol.filePath}\n`;
+            prompt += `Lines: ${targetSymbol.lines}\n`;
+            prompt += `Complexity Score: ${targetSymbol.complexity}\n\n`;
+            prompt += `### Source Code\n\`\`\`\n${targetSymbol.code}\n\`\`\`\n\n`;
 
-            // Include AI-enriched metadata if available
-            const symbolAny = context.symbol as any;
-            if (symbolAny.purpose) {
-                prompt += `Purpose: ${symbolAny.purpose}\n`;
-            }
-            if (symbolAny.fragility) {
-                prompt += `Fragility: ${symbolAny.fragility}\n`;
-            }
-            if (symbolAny.impactDepth) {
-                prompt += `Impact Depth: ${symbolAny.impactDepth}/10\n`;
-            }
-            prompt += '\n';
+            // --- Block 2: Dependency graph as structured JSON ---
+            // Uses only SQLite edge data — zero neighbor file reads.
+            const dependencyGraph = {
+                outgoing: dependencies.outgoing.map(d => ({
+                    name: d.name,
+                    type: d.type,
+                    file: d.filePath,
+                    relation: d.relationType,
+                })),
+                incoming: dependencies.incoming.map(d => ({
+                    name: d.name,
+                    type: d.type,
+                    file: d.filePath,
+                    relation: d.relationType,
+                })),
+            };
 
-            if (neighborCode.length > 0) {
-                prompt += `## Related Code (${neighborCode.length} neighbors)\n`;
-                neighborCode.forEach((code, i) => {
-                    prompt += `\n### Neighbor ${i + 1}\n\`\`\`\n${code}\n\`\`\`\n`;
-                });
-                prompt += '\n';
+            if (dependencies.outgoing.length > 0 || dependencies.incoming.length > 0) {
+                prompt += `## Dependency Graph\n`;
+                prompt += `The following JSON describes what this symbol depends on and what depends on it.\n`;
+                prompt += `\`\`\`json\n${JSON.stringify(dependencyGraph, null, 2)}\n\`\`\`\n\n`;
             }
 
-            // Chain-of-Architectural-Thought: ask AI to identify patterns first
+            // --- Block 3: Chain-of-Architectural-Thought instruction ---
             prompt += `## Architectural Analysis\n`;
-            prompt += `Before answering, identify the architectural pattern(s) `;
-            prompt += `used in this code (e.g., Factory, Singleton, Observer, `;
-            prompt += `Middleware, Repository, CQRS, Event-Driven, Strategy, Decorator). `;
-            prompt += `State the pattern(s), then answer in that context.\n\n`;
+            prompt += `Before answering, identify the architectural pattern(s) in this code `;
+            prompt += `(e.g., Factory, Singleton, Observer, Middleware, Repository, CQRS, `;
+            prompt += `Event-Driven, Strategy, Decorator). Use the dependency graph above to trace `;
+            prompt += `data flow and coupling. State the pattern(s), then answer in that context.\n\n`;
         }
 
+        // --- Block 4: The actual question ---
         prompt += `## Question\n${query}`;
 
         return prompt;
@@ -348,12 +391,14 @@ Keep responses brief and focused - under 30 words when possible.`;
 
     /**
      * Execute strategic path (Gemini 1.5 Pro via Gemini or Vertex)
+     *
+     * The prompt is already fully assembled by buildPrompt() using the NodeContext JSON.
+     * No additional file reads are done here — the prompt contains everything the AI needs.
      */
     private async executeStrategicPath(
-        _prompt: string,
+        prompt: string,
         intent: ClassifiedIntent,
         context: SymbolContext | null,
-        neighborCode: string[],
         analysisType: 'security' | 'refactor' | 'dependencies' | 'general'
     ): Promise<AIResponse> {
         // Prefer GeminiClient (API Key based) for easier setup
@@ -370,28 +415,12 @@ Keep responses brief and focused - under 30 words when possible.`;
             };
         }
 
-        // For strategic analysis, extract target code too
-        let targetCode = '';
-        if (context) {
-            try {
-                if (fs.existsSync(context.symbol.filePath)) {
-                    const content = fs.readFileSync(context.symbol.filePath, 'utf-8');
-                    const lines = content.split('\n');
-                    const start = Math.max(0, context.symbol.rangeStartLine - 1);
-                    const end = Math.min(lines.length, context.symbol.rangeEndLine);
-                    targetCode = lines.slice(start, end).join('\n');
-                } else {
-                    targetCode = '// File not found for target code';
-                }
-            } catch {
-                targetCode = '// Could not read target code';
-            }
-        }
-
-        // Execute analysis using the available client
+        // The prompt is already fully built with JSON context — pass it directly.
+        // analyzeCode receives an empty neighborCode array since neighbors are
+        // embedded as structured JSON inside the prompt itself.
         const response = await client.analyzeCode(
-            targetCode,
-            neighborCode,
+            prompt,
+            [],           // No separate raw neighbor code blobs
             analysisType,
             intent.query
         );

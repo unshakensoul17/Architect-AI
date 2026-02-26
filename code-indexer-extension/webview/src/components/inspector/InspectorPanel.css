@@ -176,8 +176,15 @@
 }
 
 @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.3;
+    }
 }
 
 .inspector-section-content {
@@ -197,19 +204,23 @@
 
 .skeleton-line {
     height: 12px;
-    background: linear-gradient(90deg, 
-        var(--vscode-editor-background) 25%, 
-        var(--vscode-panel-border) 50%, 
-        var(--vscode-editor-background) 75%
-    );
+    background: linear-gradient(90deg,
+            var(--vscode-editor-background) 25%,
+            var(--vscode-panel-border) 50%,
+            var(--vscode-editor-background) 75%);
     background-size: 200% 100%;
     animation: shimmer 1.5s infinite;
     border-radius: 4px;
 }
 
 @keyframes shimmer {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
 }
 
 /* Empty Section */
@@ -489,6 +500,30 @@
     gap: 12px;
 }
 
+/* Guard shown when a non-symbol node is selected */
+.ai-actions-unavailable {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    background-color: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    opacity: 0.75;
+}
+
+.ai-unavailable-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.ai-unavailable-text {
+    flex: 1;
+}
+
 .ai-action-buttons {
     display: flex;
     flex-wrap: wrap;
@@ -533,7 +568,7 @@
 
 .ai-loading {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     padding: 12px;
     background-color: var(--vscode-editor-background);
@@ -543,11 +578,30 @@
 
 .ai-loading-spinner {
     animation: spin 1s linear infinite;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.ai-loading-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.ai-loading-hint {
+    font-size: 10px;
+    opacity: 0.55;
+    font-style: italic;
 }
 
 @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .ai-result-container {
@@ -629,12 +683,14 @@
     background: none;
 }
 
-.ai-markdown h3, .ai-markdown h4 {
+.ai-markdown h3,
+.ai-markdown h4 {
     margin: 12px 0 8px;
     font-size: 13px;
 }
 
-.ai-markdown ul, .ai-markdown ol {
+.ai-markdown ul,
+.ai-markdown ol {
     margin: 8px 0;
     padding-left: 20px;
 }
