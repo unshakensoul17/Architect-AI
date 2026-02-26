@@ -1130,9 +1130,15 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         return (node.data as any).coupling?.color || '#6b7280';
     }, []);
 
-    if (!graphData && !(currentMode === 'trace' && functionTrace) && !(currentMode === 'architecture' && architectureSkeleton)) {
-        if (currentMode === 'trace' && !functionTrace) {
-            return (
+    let renderEmptyState = null;
+
+    const isTraceModeEmpty = currentMode === 'trace' && !functionTrace;
+    const isArchitectureModeEmpty = currentMode === 'architecture' && !architectureSkeleton;
+    const isCodebaseModeEmpty = currentMode === 'codebase' && !graphData;
+
+    if (isTraceModeEmpty || isArchitectureModeEmpty || isCodebaseModeEmpty) {
+        if (currentMode === 'trace') {
+            renderEmptyState = (
                 <div className="flex items-center justify-center w-full h-full">
                     <div className="text-center p-8 border-2 border-dashed border-white border-opacity-10 rounded-xl bg-black bg-opacity-20 max-w-md">
                         <div className="text-5xl mb-6">🔍</div>
@@ -1148,26 +1154,23 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     </div>
                 </div>
             );
-        }
-        return (
-            <div className="flex items-center justify-center w-full h-full">
-                <div className="text-center">
-                    <div className="text-lg font-semibold mb-2">No Graph Data</div>
-                    <div className="text-sm opacity-70">
-                        Index your workspace to visualize the code graph
+        } else {
+            renderEmptyState = (
+                <div className="flex items-center justify-center w-full h-full">
+                    <div className="text-center">
+                        <div className="text-lg font-semibold mb-2">No Graph Data</div>
+                        <div className="text-sm opacity-70">
+                            Index your workspace to visualize the code graph
+                        </div>
                     </div>
                 </div>
-            </div>
-        );
-    }
-
-
-    // Safety check: Avoid rendering empty graph containers which might cause issues
-    if (nodes.length === 0 && !isLayouting) {
+            );
+        }
+    } else if (nodes.length === 0 && !isLayouting) {
         // CASE 1: Filtered results are empty (Only if a specific domain is selected)
         if (selectedDomain !== 'All' &&
             ((currentMode === 'architecture' && architectureSkeleton) || (currentMode === 'codebase' && graphData))) {
-            return (
+            renderEmptyState = (
                 <div className="flex items-center justify-center w-full h-full">
                     <div className="text-center">
                         <div className="text-lg font-semibold mb-2">No Matching Nodes</div>
@@ -1183,18 +1186,51 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                     </div>
                 </div>
             );
+        } else {
+            // CASE 2: Still Processing / Calculating Layout
+            renderEmptyState = (
+                <div className="flex items-center justify-center w-full h-full">
+                    <div className="text-center">
+                        <div style={{ fontSize: '24px', marginBottom: '16px', color: 'var(--vscode-textLink-foreground)' }}>⟳</div>
+                        <div className="text-sm opacity-70">Preparing Graph Visualization...</div>
+                    </div>
+                </div>
+            );
         }
+    }
 
-        // CASE 2: Still Processing / Calculating Layout
+    if (renderEmptyState) {
         return (
-            <div className="flex items-center justify-center w-full h-full">
-                <div className="text-center">
-                    <div style={{ fontSize: '24px', marginBottom: '16px', color: 'var(--vscode-textLink-foreground)' }}>⟳</div>
-                    <div className="text-sm opacity-70">Preparing Graph Visualization...</div>
+            <div
+                className={`w-full h-full relative flex flex-col graph-wrapper ${zoomClass} ${hasActiveHighlight ? 'has-highlight' : ''}`}
+                style={{
+                    width: '100%',
+                    height: '100%',
+                    position: 'relative',
+                    display: 'flex',
+                    flexDirection: 'column',
+                }}
+            >
+                {/* View Mode Bar */}
+                <ViewModeBar
+                    currentMode={currentMode}
+                    onModeChange={handleModeChange}
+                    maxDepth={maxDepth}
+                    onDepthChange={setMaxDepth}
+                    availableDomains={availableDomains}
+                    selectedDomain={selectedDomain}
+                    onSelectDomain={setSelectedDomain}
+                    sortBy={sortBy}
+                    onSortChange={setSortBy as any}
+                />
+
+                <div style={{ flex: 1, position: 'relative' }}>
+                    {renderEmptyState}
                 </div>
             </div>
         );
     }
+
 
     return (
         <div

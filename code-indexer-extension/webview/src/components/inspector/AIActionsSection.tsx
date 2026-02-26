@@ -188,34 +188,17 @@ const AIActionsSection = memo(({ vscode }: AIActionsSectionProps) => {
     );
 });
 
-// Simple markdown renderer for AI results
-const AIMarkdownRenderer = memo(({ content }: { content: string }) => {
-    // Basic markdown rendering - code blocks, bold, lists
-    const html = content
-        // Code blocks
-        .replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-        // Inline code
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        // Bold
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        // Italic
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-        // Lists
-        .replace(/^- (.+)$/gm, '<li>$1</li>')
-        // Headers
-        .replace(/^### (.+)$/gm, '<h4>$1</h4>')
-        .replace(/^## (.+)$/gm, '<h3>$1</h3>')
-        // Paragraphs
-        .replace(/\n\n/g, '</p><p>')
-        // Wrap in paragraph
-        .replace(/^/, '<p>')
-        .replace(/$/, '</p>');
+// Full-featured markdown renderer for AI results
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
+const AIMarkdownRenderer = memo(({ content }: { content: string }) => {
     return (
-        <div
-            className="ai-markdown"
-            dangerouslySetInnerHTML={{ __html: html }}
-        />
+        <div className="ai-markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {content}
+            </ReactMarkdown>
+        </div>
     );
 });
 

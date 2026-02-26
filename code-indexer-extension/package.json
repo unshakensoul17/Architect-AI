@@ -131,21 +131,21 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",
+    "@google-cloud/vertexai": "^1.10.0",
+    "@google/generative-ai": "^0.24.1",
     "@types/better-sqlite3": "^7.6.9",
     "@types/node": "^20.11.5",
     "@types/sql.js": "^1.4.9",
     "@types/vscode": "^1.85.0",
     "drizzle-kit": "^0.20.14",
+    "drizzle-orm": "^0.45.1",
     "electron": "^39.0.0",
     "esbuild": "^0.20.0",
+    "groq-sdk": "^0.37.0",
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "@google-cloud/vertexai": "^1.10.0",
-    "@google/generative-ai": "^0.24.1",
     "better-sqlite3": "^12.6.2",
-    "drizzle-orm": "^0.30.4",
-    "groq-sdk": "^0.37.0",
     "tree-sitter-wasms": "^0.1.11",
     "web-tree-sitter": "^0.20.8"
   }

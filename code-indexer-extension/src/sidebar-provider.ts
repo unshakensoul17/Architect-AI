@@ -191,6 +191,27 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     </button>
                 </div>
 
+                <div class="header" style="margin-top: 12px;">
+                    <h2>Help & Guides</h2>
+                </div>
+
+                <div class="card" style="gap: 8px;">
+                    <a href="https://console.groq.com/keys" class="secondary-button">
+                        <span style="font-size: 14px;">⚡</span> Get Groq API Key
+                    </a>
+                    
+                    <a href="https://aistudio.google.com/app/apikey" class="secondary-button">
+                        <span style="font-size: 14px;">✨</span> Get Gemini API Key
+                    </a>
+
+                    <div class="divider"></div>
+
+                    <!-- Replace this link with your actual youtube tutorial link later -->
+                    <a href="https://youtube.com" class="secondary-button">
+                        <span style="font-size: 14px;">📺</span> Watch Video Tutorial
+                    </a>
+                </div>
+
                 <script nonce="${nonce}">
                     const vscode = acquireVsCodeApi();
                     

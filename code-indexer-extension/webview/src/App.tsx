@@ -210,8 +210,8 @@ function App() {
     // Explicitly check if the required data for the current view mode is missing
     const isDataMissing = (() => {
         if (viewMode === 'architecture') return !architectureSkeleton;
-        if (viewMode === 'trace') return !functionTrace;
-        // For flow/codebase/other modes, we need the main graph data
+        if (viewMode === 'trace') return false; // It's completely valid and expected for Trace to be empty initially
+        // For codebase mode, we need the main graph data
         return !originalGraphData && !displayedGraphData;
     })();
 
@@ -231,10 +231,18 @@ function App() {
     }, [showLoading, isTimeout, errorMessage]);
 
     // Graph Empty Check
-    const isGraphEmpty = !showLoading && !isTimeout && !errorMessage && displayedGraphData &&
-        displayedGraphData.symbols.length === 0 &&
-        displayedGraphData.files.length === 0 &&
-        displayedGraphData.domains.length === 0;
+    const isGraphEmpty = !showLoading && !isTimeout && !errorMessage && (() => {
+        if (viewMode === 'architecture') {
+            return architectureSkeleton && architectureSkeleton.nodes.length === 0;
+        }
+        if (viewMode === 'trace') {
+            return functionTrace && functionTrace.nodes.length === 0;
+        }
+        return displayedGraphData &&
+            displayedGraphData.symbols.length === 0 &&
+            displayedGraphData.files.length === 0 &&
+            displayedGraphData.domains.length === 0;
+    })();
 
     return (
         <div className="w-full h-full flex flex-col">
@@ -377,7 +385,7 @@ function App() {
                                 </div>
                             </div>
                         </div>
-                    ) : isGraphEmpty && viewMode !== 'trace' && viewMode !== 'architecture' ? (
+                    ) : isGraphEmpty ? (
                         <div className="flex items-center justify-center w-full h-full">
                             <div className="text-center max-w-md p-6 border border-dashed border-gray-500 rounded-lg">
                                 <div className="text-lg font-semibold mb-2">No nodes to display</div>
