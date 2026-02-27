@@ -61,7 +61,7 @@ class IndexWorker {
             this.startMemoryMonitor();
 
             // Initialize database in temp directory
-            const dbPath = path.join(os.tmpdir(), 'code-indexer', 'index.db');
+            const dbPath = path.join(os.tmpdir(), 'sentinel-flow', 'index.db');
             this.db = await CodeIndexDatabase.create(dbPath);
 
             // Initialize tree-sitter parser
@@ -105,9 +105,9 @@ class IndexWorker {
         const usage = process.memoryUsage();
         const heapUsedMB = Math.round(usage.heapUsed / 1024 / 1024);
 
-        // 512MB limit
-        if (heapUsedMB > 512) {
-            const error = `Memory limit exceeded: ${heapUsedMB}MB (limit: 512MB)`;
+        // 1000MB limit
+        if (heapUsedMB > 1000) {
+            const error = `Memory limit exceeded: ${heapUsedMB}MB (limit: 1000MB)`;
             console.error(error);
             // Send explicit error message before exiting to ensure manager knows why
             this.sendMessage({

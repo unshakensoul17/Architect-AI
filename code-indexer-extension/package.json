@@ -1,9 +1,9 @@
 {
-  "name": "code-indexer-extension",
-  "displayName": "Code Indexer",
-  "description": "Advanced code indexing with tree-sitter and SQLite",
+  "name": "sentinel-flow-extension",
+  "displayName": "Sentinel Flow",
+  "description": "Advanced codebase intelligence and visualization",
   "version": "0.1.0",
-  "publisher": "architect-ai",
+  "publisher": "innovators-of-ai",
   "engines": {
     "vscode": "^1.85.0",
     "node": ">=20.0.0"
@@ -20,52 +20,52 @@
     "commands": [
       {
         "command": "codeIndexer.indexWorkspace",
-        "title": "Code Indexer: Index Workspace"
+        "title": "Sentinel Flow: Index Workspace"
       },
       {
         "command": "codeIndexer.querySymbols",
-        "title": "Code Indexer: Query Symbols"
+        "title": "Sentinel Flow: Query Symbols"
       },
       {
         "command": "codeIndexer.clearIndex",
-        "title": "Code Indexer: Clear Index"
+        "title": "Sentinel Flow: Clear Index"
       },
       {
         "command": "codeIndexer.exportGraph",
-        "title": "Code Indexer: Export Graph as JSON"
+        "title": "Sentinel Flow: Export Graph as JSON"
       },
       {
         "command": "codeIndexer.exportArchitectureSkeleton",
-        "title": "Code Indexer: Export Architecture Skeleton as JSON"
+        "title": "Sentinel Flow: Export Architecture Skeleton as JSON"
       },
       {
         "command": "codeIndexer.toggleFileWatcher",
-        "title": "Code Indexer: Toggle File Watcher"
+        "title": "Sentinel Flow: Toggle File Watcher"
       },
       {
         "command": "codeIndexer.visualizeGraph",
-        "title": "Code Indexer: Visualize Code Graph"
+        "title": "Sentinel Flow: Visualize Code Graph"
       },
       {
         "command": "codeIndexer.configureAI",
-        "title": "Code Indexer: Configure AI Keys"
+        "title": "Sentinel Flow: Configure AI Keys"
       },
       {
         "command": "codeIndexer.refineGraph",
-        "title": "Code Indexer: Refine Graph with AI (Architect Pass)"
+        "title": "Sentinel Flow: Refine Graph with AI (Architect Pass)"
       },
       {
         "command": "codeIndexer.refineArchitecture",
-        "title": "Code Indexer: Refine Architecture Labels with AI"
+        "title": "Sentinel Flow: Refine Architecture Labels with AI"
       },
       {
         "command": "architect.viewDirectory",
-        "title": "Architect: View Module Graph"
+        "title": "Sentinel Flow: View Module Graph"
       }
     ],
     "configuration": {
       "type": "object",
-      "title": "Code Indexer",
+      "title": "Sentinel Flow",
       "properties": {
         "codeIndexer.vertexProject": {
           "type": "string",
@@ -98,20 +98,20 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "architect-ai-sidebar-view",
-          "title": "Architect AI",
+          "id": "sentinel-flow-sidebar-view",
+          "title": "Sentinel Flow",
           "icon": "resources/icon.svg"
         }
       ]
     },
     "views": {
-      "architect-ai-sidebar-view": [
+      "sentinel-flow-sidebar-view": [
         {
           "type": "webview",
-          "id": "architect-ai-sidebar",
+          "id": "sentinel-flow-sidebar",
           "name": "Navigate",
           "icon": "resources/icon.svg",
-          "contextualTitle": "Architect AI"
+          "contextualTitle": "Sentinel Flow"
         }
       ]
     }

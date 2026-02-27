@@ -22,13 +22,13 @@ let outputChannel: vscode.OutputChannel;
  * Extension activation
  */
 export async function activate(context: vscode.ExtensionContext) {
-    outputChannel = vscode.window.createOutputChannel('Code Indexer');
-    outputChannel.appendLine('Code Indexer extension activating...');
+    outputChannel = vscode.window.createOutputChannel('Sentinel Flow');
+    outputChannel.appendLine('Sentinel Flow extension activating...');
 
     // Initialize worker
     try {
         workerManager = new WorkerManager(() => {
-            vscode.window.showWarningMessage('Architect.ai Indexer restarted due to high memory usage.');
+            vscode.window.showWarningMessage('Sentinel Flow Indexer restarted due to high memory usage.');
             outputChannel.appendLine('Worker restarted automatically.');
         });
         const workerPath = path.join(context.extensionPath, 'dist', 'worker', 'worker.js');
@@ -64,7 +64,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const sidebarProvider = new SidebarProvider(context.extensionUri);
         context.subscriptions.push(
             vscode.window.registerWebviewViewProvider(
-                'architect-ai-sidebar',
+                'sentinel-flow-sidebar',
                 sidebarProvider
             )
         );
@@ -75,14 +75,14 @@ export async function activate(context: vscode.ExtensionContext) {
         // Listen for configuration changes
         context.subscriptions.push(
             vscode.workspace.onDidChangeConfiguration(async (e) => {
-                if (e.affectsConfiguration('codeIndexer')) {
+                if (e.affectsConfiguration('sentinelFlow')) {
                     await updateWorkerConfig();
                 }
             })
         );
     } catch (error) {
         outputChannel.appendLine(`Failed to initialize worker: ${error}`);
-        vscode.window.showErrorMessage('Code Indexer: Failed to initialize worker');
+        vscode.window.showErrorMessage('Sentinel Flow: Failed to initialize worker');
         return;
     }
 
@@ -165,7 +165,7 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    outputChannel.appendLine('Code Indexer extension activated');
+    outputChannel.appendLine('Sentinel Flow extension activated');
 }
 
 /**
@@ -476,7 +476,7 @@ async function refineGraph() {
         return;
     }
 
-    const config = vscode.workspace.getConfiguration('codeIndexer');
+    const config = vscode.workspace.getConfiguration('sentinelFlow');
     const vertexProject = config.get<string>('vertexProject');
     const geminiApiKey = config.get<string>('geminiApiKey');
 
@@ -504,7 +504,7 @@ async function refineGraph() {
                     `Graph refined: ${result.refinedNodeCount} nodes updated with AI insights.`
                 );
                 outputChannel.appendLine(
-                    `Architect Pass complete: ${result.refinedNodeCount} nodes refined, ${result.implicitLinkCount} implicit links found.`
+                    `Sentinel Pass complete: ${result.refinedNodeCount} nodes refined, ${result.implicitLinkCount} implicit links found.`
                 );
 
                 // Refresh webview if open
@@ -587,7 +587,7 @@ function getLanguage(filePath: string): 'typescript' | 'python' | 'c' | null {
 async function updateWorkerConfig() {
     if (!workerManager) return;
 
-    const config = vscode.workspace.getConfiguration('codeIndexer');
+    const config = vscode.workspace.getConfiguration('sentinelFlow');
     const vertexProject = config.get<string>('vertexProject');
     const groqApiKey = config.get<string>('groqApiKey');
     const geminiApiKey = config.get<string>('geminiApiKey');
@@ -607,7 +607,7 @@ async function updateWorkerConfig() {
  * Configure AI API keys via input boxes
  */
 async function configureAI() {
-    const config = vscode.workspace.getConfiguration('codeIndexer');
+    const config = vscode.workspace.getConfiguration('sentinelFlow');
 
     // 1. Get Groq API Key
     const currentGroqKey = config.get<string>('groqApiKey') || '';

@@ -85,31 +85,52 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     const [selectedDomain, setSelectedDomain] = useState<string>('All');
     const [sortBy, setSortBy] = useState<'name' | 'complexity' | 'fragility' | 'blastRadius'>('name');
 
-    // Extract available domains from architecture skeleton
+    const [wantsDefaultDomain, setWantsDefaultDomain] = useState(false);
+
+    // Extract available domains from architecture skeleton and graph data
     const availableDomains = useMemo(() => {
-        if (!architectureSkeleton) return [];
         const domains = new Set<string>();
 
-        const traverse = (nodes: SkeletonNodeData[]) => {
-            for (const n of nodes) {
-                // Priority 1: Explicitly classified domains
-                if (n.domainName) {
-                    domains.add(n.domainName);
-                }
-
-                // Priority 2: Folder names (at depth 0 or 1) as proxy domains
-                // This handles projects without AI analysis gracefully.
-                if (n.isFolder && n.depth <= 1) {
-                    domains.add(n.name);
-                }
-
-                if (n.children) traverse(n.children);
+        if (currentMode === 'codebase' && graphData) {
+            if (graphData.domains) {
+                graphData.domains.forEach(d => domains.add(d.domain));
             }
-        };
+            graphData.symbols.forEach(s => {
+                if (s.domain) domains.add(s.domain);
+            });
+        } else if (architectureSkeleton) {
+            const traverse = (nodes: SkeletonNodeData[]) => {
+                for (const n of nodes) {
+                    // Priority 1: Explicitly classified domains
+                    if (n.domainName) {
+                        domains.add(n.domainName);
+                    }
 
-        traverse(architectureSkeleton.nodes);
+                    // Priority 2: Folder names (at depth 0 or 1) as proxy domains
+                    // This handles projects without AI analysis gracefully.
+                    if (n.isFolder && n.depth <= 1) {
+                        domains.add(n.name);
+                    }
+
+                    if (n.children) traverse(n.children);
+                }
+            };
+
+            traverse(architectureSkeleton.nodes);
+        }
+
         return Array.from(domains).sort();
-    }, [architectureSkeleton]);
+    }, [architectureSkeleton, graphData, currentMode]);
+
+    // Default domain selection effect for codebase mode
+    useEffect(() => {
+        if (wantsDefaultDomain && currentMode === 'codebase' && availableDomains.length > 0) {
+            setSelectedDomain(availableDomains[0]);
+            setWantsDefaultDomain(false);
+        }
+    }, [wantsDefaultDomain, currentMode, availableDomains]);
+
+    const [pendingMode, setPendingMode] = useState<ViewMode | null>(null);
 
 
 
@@ -1106,12 +1127,34 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
     // Handle mode change
     const handleModeChange = useCallback(
         (mode: ViewMode) => {
+            if (mode === 'codebase' && currentMode !== 'codebase') {
+                setPendingMode('codebase');
+                return;
+            } else if (mode === 'architecture' && currentMode !== 'architecture') {
+                setSelectedDomain('All');
+            }
+
             switchMode(mode);
             setFocusedNodeId(null);
             clearFocus();
         },
-        [switchMode, setFocusedNodeId, clearFocus]
+        [switchMode, setFocusedNodeId, clearFocus, currentMode]
     );
+
+    const handleConfirmPendingMode = useCallback(() => {
+        if (pendingMode === 'codebase') {
+            // Set wantsDefaultDomain to true so the effect picks the first domain AFTER availableDomains updates for codebase mode
+            setWantsDefaultDomain(true);
+            switchMode('codebase');
+            setFocusedNodeId(null);
+            clearFocus();
+        }
+        setPendingMode(null);
+    }, [pendingMode, switchMode, setFocusedNodeId, clearFocus]);
+
+    const handleCancelPendingMode = useCallback(() => {
+        setPendingMode(null);
+    }, []);
 
     // Memoize MiniMap nodeColor to prevent re-renders
     const miniMapNodeColor = useCallback((node: Node) => {
@@ -1332,6 +1375,50 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-50 pointer-events-none">
                     <div className="text-white text-lg font-bold animate-pulse">
                         Calculating Layout...
+                    </div>
+                </div>
+            )}
+
+            {/* Pending Mode Modal */}
+            {pendingMode === 'codebase' && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-[9999]" style={{ zIndex: 9999 }}>
+                    <div
+                        className="p-6 rounded-xl max-w-sm text-center shadow-2xl backdrop-blur-sm shadow-black/50"
+                        style={{
+                            backgroundColor: 'var(--vscode-editor-background)',
+                            border: '1px solid var(--vscode-widget-border)',
+                            color: 'var(--vscode-editor-foreground)'
+                        }}
+                    >
+                        <div className="text-3xl mb-3">⚠️</div>
+                        <div className="text-lg font-bold mb-2">Computational Warning</div>
+                        <p className="mb-6 opacity-80 text-sm leading-relaxed">
+                            The Codebase view mode renders a highly detailed symbol-level graph.
+                            If your project is large, this may take a while to process. Do you want to continue?
+                        </p>
+                        <div className="flex justify-center gap-3">
+                            <button
+                                onClick={handleCancelPendingMode}
+                                className="px-5 py-2 rounded text-sm font-medium transition-all hover:opacity-80 border"
+                                style={{
+                                    backgroundColor: 'var(--vscode-button-secondaryBackground)',
+                                    color: 'var(--vscode-button-secondaryForeground)',
+                                    borderColor: 'var(--vscode-button-secondaryHoverBackground)'
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleConfirmPendingMode}
+                                className="px-5 py-2 rounded text-sm font-medium transition-all hover:opacity-80"
+                                style={{
+                                    backgroundColor: 'var(--vscode-button-background)',
+                                    color: 'var(--vscode-button-foreground)'
+                                }}
+                            >
+                                Continue
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

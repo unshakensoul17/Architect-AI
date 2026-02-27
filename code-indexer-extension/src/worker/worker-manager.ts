@@ -202,11 +202,13 @@ export class WorkerManager {
     async parseBatch(
         files: { filePath: string; content: string; language: 'typescript' | 'python' | 'c' }[]
     ): Promise<{ totalSymbols: number; totalEdges: number; filesProcessed: number }> {
+        // Massive workspaces can take several minutes to parse and index initially.
+        // We give this 10 minutes (600,000ms) to ensure it doesn't kill long-running jobs.
         const response = await this.sendRequest({
             type: 'parse-batch',
             id: this.generateId(),
             files,
-        });
+        }, 600000);
 
         if (response.type !== 'parse-batch-complete') {
             throw new Error('Unexpected response type');

@@ -51,7 +51,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 				<meta charset="UTF-8">
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:; connect-src ${webview.cspSource} data:;">
-				<title>Architect AI</title>
+				<title>Sentinel Flow</title>
                 <style>
                     :root {
                         --container-padding: 16px;
@@ -161,7 +161,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 			</head>
 			<body>
                 <div class="header">
-                    <h2>Architect AI</h2>
+                    <h2>Sentinel Flow</h2>
                 </div>
 
                 <div class="card">
